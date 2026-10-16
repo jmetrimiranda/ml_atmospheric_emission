@@ -1,7 +1,9 @@
+import os
 from pathlib import Path
 
 #Root folder of the project (works from notebook, terminal or Makefile)
-PROJ_ROOT = Path(__file__).resolve().parents[1]
+#Environment variable PLUMA_PASTA: another folder with data/ and models/ (when the package is installed elsewhere)
+PROJ_ROOT = Path(os.environ.get('PLUMA_PASTA', Path(__file__).resolve().parents[1]))
 
 PATH_RAW = PROJ_ROOT / "data/raw/Tags_Pluma.xlsx"
 PATH_INTERIM = PROJ_ROOT / "data/interim/dataset_interim.csv"
@@ -34,6 +36,10 @@ DIAS_SUSPEITOS = ['2026-09-15', '2026-09-16']
 
 #Tags the operator can act on (confirmed: all the process tags are controllable)
 VARIAVEIS_CONTROLE = TAGS
+#The recommendation did NOT pass the validation of the notebook 6.0: the models of another period do not see the
+#risk going down, the opposite change helps the same, and the direction of the tags changes between the periods.
+#Use it only as a hypothesis to test in the plant. Change to True only after a validation that passes
+RECOMENDACAO_VALIDADA = False
 
 #Models compared in notebooks/3.0-jm-escolha-horizontes.ipynb (name: columns used)
 MODELOS = {
@@ -48,20 +54,24 @@ MODELOS = {
 CABECAS_POSSIVEIS = [15, 30, 60, 90, 120, 180, 240, 360]
 
 #Forecaster of each head (indicator rule): the model is used only where it beats the persistence
-#'persistencia' = score of the camera now | 'base_estado' = model of MODELOS
-#Data from 2026-08-20 to 2026-10-13 (days of DIAS_SUSPEITOS removed)
-#Confirmed by notebooks/4.0 (no group of features beat it: reports/escolha_features.csv)
+#'persistencia' = score of the camera now | 'base_estado' = model of MODELOS (algorithm ALGORITMO)
+#Data from 2026-08-20 to 2026-10-13 (days of DIAS_SUSPEITOS removed). Decision and why:
+#  3.0: the model beats the persistence from 180 min (reports/escolha_horizontes.md)
+#  4.0: no group of features improved the model (reports/escolha_features.csv)
+#  5.0: with leaves of ~1 day (FOLHA_MINIMA) the LightGBM also beats the persistence in 90 and 120 min
+#       (CV with Reality Check + Holm, confirmed in the hold out: reports/escolha_algoritmo.csv)
 PREVISOR_POR_CABECA = {
     15: 'persistencia',
     30: 'persistencia',
     60: 'persistencia',
-    90: 'persistencia',
-    120: 'persistencia',
+    90: 'base_estado',
+    120: 'base_estado',
     180: 'base_estado',
     240: 'base_estado',
     360: 'base_estado'
 }
-MODELO_ATUAL = TAGS + CALENDARIO + ESTADO
+#Columns of the model of the heads that use a model (the same of MODELOS['base_estado'])
+MODELO_ATUAL = MODELOS['base_estado']
 
 #Algorithms compared in notebooks/5.0-jm-escolha-algoritmo.ipynb (modeling/train.py, create_algorithm)
 ALGORITMOS = ['lightgbm', 'xgboost', 'gradient_boosting', 'random_forest']

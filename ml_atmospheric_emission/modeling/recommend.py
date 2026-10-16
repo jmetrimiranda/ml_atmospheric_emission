@@ -1,6 +1,22 @@
 import numpy as np
 import pandas as pd
 
+from ml_atmospheric_emission.config import MODELO_ATUAL, PREVISOR_POR_CABECA, RECOMENDACAO_VALIDADA, VARIAVEIS_CONTROLE
+from ml_atmospheric_emission.dataset import load_interim, load_processed
+from ml_atmospheric_emission.features import create_model_features
+from ml_atmospheric_emission.modeling.predict import load_head_models
+
+
+def predict_risk(modelos, X):
+    #Risk of plume: probability of a single model, or the MEAN of a list of models (one model per head)
+    #All the models must use the same columns (true for base_estado: the columns do not depend on the head)
+    if not isinstance(modelos, list):
+        modelos = [modelos]
+    soma = 0
+    for model in modelos:
+        soma = soma + model.predict_proba(X)[:, 1]
+    return soma / len(modelos)
+
 
 def create_limits(ds, variaveis_controle, percentil_min=5, percentil_max=95):
     #Allowed range of each controllable variable: only values the plant already operated
@@ -36,10 +52,11 @@ def distance_to_history(valores, suporte):
 
 def recommend_actions(model, linha, features, variaveis_controle, limites, suporte, passo_maximo=0.5, n_valores=11, n_rodadas=2):
     #Searches small changes in the controllable variables that lower the predicted risk
+    #model: one model, or a list of models (one per head): the risk is the mean of them (predict_risk)
     #Rules: only controllable variables change, each one at most passo_maximo standard deviations,
     #inside the historical range, and the combination of tags must look like a real operation
     linha_original = linha[features].astype(float)
-    risco_original = model.predict_proba(linha_original.to_frame().T)[:, 1][0]
+    risco_original = predict_risk(model, linha_original.to_frame().T)[0]
     recomendacao = {
         'risco_atual': round(risco_original, 3),
         'risco_recomendado': round(risco_original, 3),
@@ -66,7 +83,7 @@ def recommend_actions(model, linha, features, variaveis_controle, limites, supor
             #All candidate values for this variable, keeping the best values found for the others
             candidatos = pd.DataFrame([melhor] * n_valores).reset_index(drop=True)
             candidatos[variavel] = np.linspace(inferior, superior, n_valores)
-            riscos = model.predict_proba(candidatos[features])[:, 1]
+            riscos = predict_risk(model, candidatos[features])
             distancias = distance_to_history(candidatos[variaveis_controle].values, suporte)
             cont = 0
             for risco in riscos:
@@ -103,6 +120,13 @@ def print_recommendation(data, recomendacao):
         print('Nenhuma mudanca dentro das regras reduz o risco')
     for mudanca in recomendacao['mudancas']:
         print(' ', mudanca['direcao'], mudanca['variavel'], 'de', mudanca['valor_atual'], 'para', mudanca['valor_recomendado'])
+    if 'risco_por_cabeca' in recomendacao:
+        print('Risco de cada cabeca (agora -> com a recomendacao):')
+        for minutos in recomendacao['risco_por_cabeca']:
+            antes, depois = recomendacao['risco_por_cabeca'][minutos]
+            print('   ', minutos, 'min:', antes, '->', depois)
+    if 'validada' in recomendacao and not recomendacao['validada']:
+        print('ATENCAO: recomendacao NAO validada (notebook 6.0). E uma hipotese para testar com a operacao, nao uma ordem')
     print()
 
 
@@ -116,6 +140,7 @@ def opposite_change(linha_original, linha_recomendada, variaveis_controle):
 
 
 def validate_recommendations(model_rec, model_val, ds_periodo, features, variaveis_controle, n_momentos=150, seed=42):
+    #model_rec / model_val: one model or a list of models (one per head, the risk is the mean)
     #model_rec was trained on ds_periodo and makes the recommendations.
     #model_val was trained on ANOTHER period: it never saw these moments, and checks the recommendation.
     #If the recommendation is real, model_val also sees the risk going down,
@@ -126,7 +151,7 @@ def validate_recommendations(model_rec, model_val, ds_periodo, features, variave
 
     #Moments with high predicted risk (top 10%) and all tags with value
     ds_periodo = ds_periodo[ds_periodo[variaveis_controle].notna().all(axis=1)].reset_index(drop=True)
-    risco = model_rec.predict_proba(ds_periodo[features])[:, 1]
+    risco = predict_risk(model_rec, ds_periodo[features])
     indices = np.where(risco >= np.quantile(risco, 0.9))[0]
     indices = rng.choice(indices, size=min(n_momentos, len(indices)), replace=False)
 
@@ -143,9 +168,9 @@ def validate_recommendations(model_rec, model_val, ds_periodo, features, variave
             'Data': linha['Data'],
             'risco_rec_antes': recomendacao['risco_atual'],
             'risco_rec_depois': recomendacao['risco_recomendado'],
-            'risco_val_antes': model_val.predict_proba(original.to_frame().T)[:, 1][0],
-            'risco_val_depois': model_val.predict_proba(recomendada.to_frame().T)[:, 1][0],
-            'risco_val_contrario': model_val.predict_proba(contraria.to_frame().T)[:, 1][0],
+            'risco_val_antes': predict_risk(model_val, original.to_frame().T)[0],
+            'risco_val_depois': predict_risk(model_val, recomendada.to_frame().T)[0],
+            'risco_val_contrario': predict_risk(model_val, contraria.to_frame().T)[0],
             'mudancas': recomendacao['mudancas']
         })
     tabela = pd.DataFrame(linhas)
@@ -174,3 +199,45 @@ def validate_recommendations(model_rec, model_val, ds_periodo, features, variave
     print(direcoes.to_string())
     print()
     return tabela, direcoes
+
+
+def recommend_now(ds_historico, ds_agora, modelos_cabeca, features, variaveis_controle, passo_maximo=0.5):
+    #Recommendation for the LAST instant of ds_agora (table made by features.create_model_features)
+    #Risk = mean probability of plume of the heads that use a model (the tags enter only in them:
+    #the persistence heads use only the camera score now, a change in the tags does not move them)
+    #Allowed values come from the history (ds_historico): range and combinations the plant already operated
+    limites = create_limits(ds_historico, variaveis_controle)
+    suporte = create_support(ds_historico, variaveis_controle)
+    linha = ds_agora.sort_values('Data').iloc[-1]
+    lista_modelos = []
+    for minutos in modelos_cabeca:
+        lista_modelos.append(modelos_cabeca[minutos])
+    recomendacao = recommend_actions(lista_modelos, linha, features, variaveis_controle, limites, suporte, passo_maximo)
+    #Risk of each head, before and after the recommendation
+    antes = linha[features].astype(float).to_frame().T
+    depois = recomendacao['linha_recomendada'][features].astype(float).to_frame().T
+    risco_cabeca = {}
+    for minutos in modelos_cabeca:
+        risco_antes = round(predict_risk(modelos_cabeca[minutos], antes)[0], 3)
+        risco_depois = round(predict_risk(modelos_cabeca[minutos], depois)[0], 3)
+        risco_cabeca[minutos] = (risco_antes, risco_depois)
+    recomendacao['Data'] = linha['Data']
+    recomendacao['risco_por_cabeca'] = risco_cabeca
+    recomendacao['validada'] = RECOMENDACAO_VALIDADA
+    return recomendacao
+
+
+def main():
+    #Step 5 of the pipeline: changes in the controllable tags that lower the risk of plume, for the
+    #LAST instant of the interim. History (limits of operation) = processed table of the training
+    ds_historico = load_processed()
+    ds_agora = create_model_features(load_interim())
+    modelos_cabeca = load_head_models(PREVISOR_POR_CABECA)
+    recomendacao = recommend_now(ds_historico, ds_agora, modelos_cabeca, MODELO_ATUAL, VARIAVEIS_CONTROLE)
+    print('Risco = media da probabilidade de pluma nas cabecas', list(modelos_cabeca.keys()), 'min')
+    print_recommendation(recomendacao['Data'], recomendacao)
+    return recomendacao
+
+
+if __name__ == "__main__":
+    main()

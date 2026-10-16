@@ -4,8 +4,8 @@ build-backend = "flit_core.buildapi"
 
 [project]
 name = "ml_atmospheric_emission"
-version = "0.0.1"
-description = "A short description of the project."
+version = "1.0.0"
+description = "Previsao da pluma visivel (camera) de 15 a 360 min e recomendacao de ajustes nas tags de processo"
 authors = [
   { name = "jmetrimiranda" },
 ]
@@ -16,6 +16,20 @@ classifiers = [
     "License :: OSI Approved :: MIT License"
 ]
 requires-python = ">=3.10"
+dependencies = [
+    "pandas>=2.0",
+    "numpy",
+    "scikit-learn>=1.4",
+    "lightgbm>=4.0",
+    "xgboost>=2.0",
+    "matplotlib",
+    "joblib",
+    "requests",
+    "openpyxl",
+]
+
+[project.scripts]
+pluma = "ml_atmospheric_emission.pipeline:main"
 
 
 [tool.ruff]

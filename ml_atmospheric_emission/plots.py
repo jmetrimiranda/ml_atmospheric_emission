@@ -256,3 +256,31 @@ def plot_persistence(tabela, caminho):
     fig.tight_layout()
     fig.savefig(caminho, dpi=150, bbox_inches='tight')
     plt.show()
+
+
+def plot_forecasts(ds, previsoes, previsores, cabecas, inicio, dias, caminho):
+    #For each head: the forecast made at t is drawn at the instant it refers to (t + k),
+    #next to the real score of the camera at that instant (gray). Good forecast = blue rises with the gray
+    fim = pd.Timestamp(inicio) + pd.Timedelta(days=dias)
+    real = ds[(ds['Data'] >= pd.Timestamp(inicio)) & (ds['Data'] < fim)].sort_values('Data')
+    fig, eixos = plt.subplots(len(cabecas), 1, figsize=(11, 2.4*len(cabecas)), sharex=True, squeeze=False)
+    cont = 0
+    for minutos in cabecas:
+        ax = eixos[cont, 0]
+        ax.plot(real['Data'], real['y'], color='#999999', linewidth=1.2, label='score real da camera')
+        instante = previsoes['Data'] + pd.Timedelta(minutes=minutos)
+        mascara = (instante >= pd.Timestamp(inicio)) & (instante < fim)
+        ax.plot(instante[mascara], previsoes['prob_' + str(minutos)][mascara], color='#2a78d6', linewidth=1.6,
+                label='previsao feita ' + str(minutos) + ' min antes')
+        ax.axhline(0.5, color='#555555', linewidth=0.8, linestyle=':')
+        ax.set_ylim(-0.02, 1.02)
+        ax.set_ylabel(str(minutos) + ' min\n(' + previsores[minutos] + ')', fontsize=9)
+        ax.legend(frameon=False, fontsize=8, loc='upper right')
+        ax.grid(True, alpha=0.3)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        cont = cont+1
+    eixos[0, 0].set_title('Previsao de cada cabeca no instante a que ela se refere (dias do hold out, nunca vistos no treino)')
+    fig.tight_layout()
+    fig.savefig(caminho, dpi=150, bbox_inches='tight')
+    plt.show()

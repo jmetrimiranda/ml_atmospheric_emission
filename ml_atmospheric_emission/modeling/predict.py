@@ -5,17 +5,26 @@ from ml_atmospheric_emission.dataset import load_interim
 from ml_atmospheric_emission.features import create_model_features, head_features
 
 
-def predict_heads(ds, previsores, modelos):
-    #Plume score for each head (one column per head), using the forecaster of each head:
+def load_head_models(previsores, pasta=PATH_MODELS):
+    #Saved models of the heads that use a model (made by train.py): {minutos: model}
+    modelos_cabeca = {}
+    for minutos in previsores:
+        if previsores[minutos] != 'persistencia':
+            modelos_cabeca[minutos] = joblib.load(pasta / f'modelo_y_{minutos}.pkl')
+    return modelos_cabeca
+
+
+def predict_heads(ds, previsores, modelos, pasta=PATH_MODELS):
+    #Plume probability for each head (one column per head), using the forecaster of each head:
     #'persistencia' = camera score now (column 'y'), otherwise the saved model of that head
+    modelos_cabeca = load_head_models(previsores, pasta)
     resultado = ds[['Data']].copy()
     for minutos in previsores:
         nome = previsores[minutos]
         if nome == 'persistencia':
             resultado['prob_' + str(minutos)] = ds['y'].values
         else:
-            model = joblib.load(PATH_MODELS / f'modelo_y_{minutos}.pkl')
-            resultado['prob_' + str(minutos)] = model.predict_proba(ds[head_features(modelos[nome], minutos)])[:, 1]
+            resultado['prob_' + str(minutos)] = modelos_cabeca[minutos].predict_proba(ds[head_features(modelos[nome], minutos)])[:, 1]
     return resultado
 
 

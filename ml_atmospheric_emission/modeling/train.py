@@ -327,21 +327,33 @@ def train_regressor_experiment(ds, target, features=FEATURES, test_size=0.2, n_s
     return model, metricas
 
 
-def train_heads(ds, previsores, modelos, algoritmo=ALGORITMO, limiar=0.5):
-    #One model per head that uses a model (the persistence needs no training), saved in models/
+def train_head_models(ds, previsores, modelos, algoritmo=ALGORITMO, limiar=0.5):
+    #One model per head that uses a model (the persistence needs no training), NOT saved: {minutos: model}
     #algoritmo: ALGORITMO of config.py (chosen in the notebook 5.0), class_weight=None
+    modelos_cabeca = {}
     for minutos in previsores:
         nome = previsores[minutos]
         if nome == 'persistencia':
-            print(minutos, 'min: persistencia, nada para treinar')
             continue
         target = 'y_' + str(minutos)
         dx = ds[ds[target].notna()]
         y = (dx[target] >= limiar).astype(int)
         model = create_algorithm(algoritmo)
         model.fit(dx[head_features(modelos[nome], minutos)], y)
-        joblib.dump(model, PATH_MODELS / f'modelo_y_{minutos}.pkl')
-        print(minutos, 'min:', nome, '(' + algoritmo + ') | modelo salvo: modelo_y_' + str(minutos) + '.pkl | linhas:', len(dx))
+        modelos_cabeca[minutos] = model
+    return modelos_cabeca
+
+
+def train_heads(ds, previsores, modelos, algoritmo=ALGORITMO, limiar=0.5):
+    #Trains the models of the heads (train_head_models) and saves them in models/modelo_y_<minutos>.pkl
+    modelos_cabeca = train_head_models(ds, previsores, modelos, algoritmo, limiar)
+    for minutos in previsores:
+        if minutos not in modelos_cabeca:
+            print(minutos, 'min: persistencia, nada para treinar')
+            continue
+        joblib.dump(modelos_cabeca[minutos], PATH_MODELS / f'modelo_y_{minutos}.pkl')
+        linhas = int(ds['y_' + str(minutos)].notna().sum())
+        print(minutos, 'min:', previsores[minutos], '(' + algoritmo + ') | modelo salvo: modelo_y_' + str(minutos) + '.pkl | linhas:', linhas)
 
 
 def train_heads_cv(ds, features, cabecas, n_splits=5, limiar=0.5):

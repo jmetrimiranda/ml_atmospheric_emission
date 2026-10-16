@@ -76,9 +76,14 @@ train:
 predict:
 	$(PYTHON_INTERPRETER) ml_atmospheric_emission/modeling/predict.py
 
-## Whole pipeline (1 to 4)
+## Pipeline 5: recommendation of changes in the tags for the last instant
+.PHONY: recommend
+recommend:
+	$(PYTHON_INTERPRETER) ml_atmospheric_emission/modeling/recommend.py
+
+## Whole pipeline (1 to 5)
 .PHONY: pipeline
-pipeline: data features train predict
+pipeline: data features train predict recommend
 
 
 
