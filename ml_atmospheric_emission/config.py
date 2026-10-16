@@ -50,6 +50,7 @@ CABECAS_POSSIVEIS = [15, 30, 60, 90, 120, 180, 240, 360]
 #Forecaster of each head (indicator rule): the model is used only where it beats the persistence
 #'persistencia' = score of the camera now | 'base_estado' = model of MODELOS
 #Data from 2026-08-20 to 2026-10-13 (days of DIAS_SUSPEITOS removed)
+#Confirmed by notebooks/4.0 (no group of features beat it: reports/escolha_features.csv)
 PREVISOR_POR_CABECA = {
     15: 'persistencia',
     30: 'persistencia',
@@ -61,6 +62,14 @@ PREVISOR_POR_CABECA = {
     360: 'base_estado'
 }
 MODELO_ATUAL = TAGS + CALENDARIO + ESTADO
+
+#Algorithms compared in notebooks/5.0-jm-escolha-algoritmo.ipynb (modeling/train.py, create_algorithm)
+ALGORITMOS = ['lightgbm', 'xgboost', 'gradient_boosting', 'random_forest']
+#Algorithm of the heads that use a model (base_estado). Decision and why: reports/escolha_algoritmo.csv
+ALGORITMO = 'lightgbm'
+#Against overfitting: each leaf of the trees has at least ~1 day of data (288 rows of 5 min),
+#so a leaf can not memorize one plume episode (a few hours). With 100 rows the train AP was ~0.86 and the CV ~0.17
+FOLHA_MINIMA = 300
 
 #Feature engineering tested in notebooks/4.0-jm-escolha-melhores-features.ipynb
 LAG_MINUTOS = [15, 30, 60]

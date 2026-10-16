@@ -182,3 +182,77 @@ def plot_model_features(tabela_persistencia, tabela_cadeia, caminho):
     fig.tight_layout()
     fig.savefig(caminho, dpi=150, bbox_inches='tight')
     plt.show()
+
+
+def plot_algorithms(tabela_decisao, ap_treino, caminho):
+    #Top: AP of the CV (validation) of each algorithm per head, and the persistence (dashed)
+    #Middle: AP in the TRAIN rows minus AP of the CV: the bigger, the more the model memorized the train
+    #Bottom: gain of the best algorithm over the current forecaster of the head (95% interval of the best, filled = significant)
+    cores = {'lightgbm': '#1baf7a', 'xgboost': '#eb6834', 'gradient_boosting': '#eda100', 'random_forest': '#8a5cd0'}
+    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 11), sharex=True)
+    posicoes = list(range(len(tabela_decisao)))
+    ax1.plot(posicoes, tabela_decisao['ap_persistencia'], color='#2a78d6', linestyle='--', linewidth=2, marker='o',
+             markersize=4, label='persistencia')
+    for nome in cores:
+        if 'ap_' + nome in tabela_decisao.columns:
+            ax1.plot(posicoes, tabela_decisao['ap_' + nome], color=cores[nome], linewidth=2, marker='o', markersize=4, label=nome)
+            ax2.plot(posicoes, ap_treino[nome].values - tabela_decisao['ap_' + nome].values, color=cores[nome], linewidth=2,
+                     marker='o', markersize=4, label=nome)
+    ax1.set_title('AP no CV temporal (validacao) por cabeca')
+    ax1.set_ylabel('AP (media dos folds)')
+    ax1.set_ylim(0, None)
+    ax1.legend(frameon=False, fontsize=8, loc='upper right')
+    ax2.set_title('Overfitting: AP no treino - AP na validacao (quanto maior, mais decorado)')
+    ax2.set_ylabel('Diferenca de AP')
+    ax2.set_ylim(0, None)
+    ax2.legend(frameon=False, fontsize=8, loc='upper left')
+
+    for i in posicoes:
+        linha = tabela_decisao.iloc[i]
+        cor = cores.get(linha['melhor'], '#555555')
+        ax3.plot([i, i], [linha['ic_inf'], linha['ic_sup']], color=cor, linewidth=1.5)
+        if linha['melhoria']:
+            ax3.plot(i, linha['ganho'], 'o', color=cor, markersize=9)
+        else:
+            ax3.plot(i, linha['ganho'], 'o', markerfacecolor='white', markeredgecolor=cor, markeredgewidth=2, markersize=9)
+        ax3.annotate(linha['melhor'], (i, linha['ic_sup']), xytext=(0, 4), textcoords='offset points', ha='center',
+                     va='bottom', fontsize=7, color='#333333')
+    ax3.axhline(0, color='#555555', linewidth=1)
+    ax3.set_title('Melhor algoritmo contra o previsor atual (cheio = significativo com Reality Check + Holm)')
+    ax3.set_ylabel('Ganho de AP')
+    margem = (tabela_decisao['ic_sup'].max() - tabela_decisao['ic_inf'].min()) * 0.25
+    ax3.set_ylim(tabela_decisao['ic_inf'].min() - 0.01, tabela_decisao['ic_sup'].max() + margem)
+    rotulos = [str(m) + ' min\n(vs ' + r + ')' for m, r in zip(tabela_decisao['minutos'], tabela_decisao['referencia'])]
+    ax3.set_xticks(posicoes)
+    ax3.set_xticklabels(rotulos, fontsize=8)
+    for ax in [ax1, ax2, ax3]:
+        ax.grid(True, alpha=0.3)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+    fig.tight_layout()
+    fig.savefig(caminho, dpi=150, bbox_inches='tight')
+    plt.show()
+
+
+def plot_persistence(tabela, caminho):
+    #AP of the persistence (forecast for t + k = camera score now) in each head, and the prevalence of plume
+    #(the AP of a random guess). When the two lines meet, the score now says nothing about t + k
+    fig, ax = plt.subplots(figsize=(9, 4.5))
+    ax.plot(tabela['minutos'], tabela['ap_persistencia'], color='#2a78d6', linewidth=2, marker='o', markersize=5,
+            label='AP da persistencia (score agora como previsao)')
+    ax.plot(tabela['minutos'], tabela['prevalencia'], color='#888888', linestyle='--', linewidth=1.5,
+            label='prevalencia de pluma (AP de um chute)')
+    for i in range(len(tabela)):
+        ax.annotate(f"{tabela['ap_persistencia'].iloc[i]:.2f}", (tabela['minutos'].iloc[i], tabela['ap_persistencia'].iloc[i]),
+                    xytext=(0, 6), textcoords='offset points', ha='center', fontsize=8, color='#2a78d6')
+    ax.set_title('Persistencia: quanto o score da camera agora preve a pluma k minutos depois')
+    ax.set_xlabel('Minutos no futuro (cabeca)')
+    ax.set_ylabel('AP')
+    ax.set_ylim(0, None)
+    ax.legend(frameon=False, fontsize=9)
+    ax.grid(True, alpha=0.3)
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    fig.tight_layout()
+    fig.savefig(caminho, dpi=150, bbox_inches='tight')
+    plt.show()

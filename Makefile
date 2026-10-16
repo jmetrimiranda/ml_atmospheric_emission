@@ -56,6 +56,30 @@ create_environment:
 # PROJECT RULES                                                                 #
 #################################################################################
 
+## Pipeline 1: raw (excel) -> data/interim
+.PHONY: data
+data:
+	$(PYTHON_INTERPRETER) ml_atmospheric_emission/dataset.py
+
+## Pipeline 2: interim -> data/processed (features + targets of the heads)
+.PHONY: features
+features:
+	$(PYTHON_INTERPRETER) ml_atmospheric_emission/features.py
+
+## Pipeline 3: processed -> models/ (heads that use a model)
+.PHONY: train
+train:
+	$(PYTHON_INTERPRETER) ml_atmospheric_emission/modeling/train.py
+
+## Pipeline 4: probability of plume of each head at the last instant
+.PHONY: predict
+predict:
+	$(PYTHON_INTERPRETER) ml_atmospheric_emission/modeling/predict.py
+
+## Whole pipeline (1 to 4)
+.PHONY: pipeline
+pipeline: data features train predict
+
 
 
 #################################################################################

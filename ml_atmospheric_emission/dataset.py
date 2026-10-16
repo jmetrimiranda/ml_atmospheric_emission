@@ -1,6 +1,6 @@
 import pandas as pd
 
-from ml_atmospheric_emission.config import PATH_EXTERNAL, PATH_INTERIM, PATH_RAW
+from ml_atmospheric_emission.config import PATH_EXTERNAL, PATH_INTERIM, PATH_PROCESSED, PATH_RAW
 
 
 def load_raw(path=PATH_RAW):
@@ -25,6 +25,13 @@ def filter_rows(ds):
 
 
 def load_interim(path=PATH_INTERIM):
+    ds = pd.read_csv(path)
+    ds['Data'] = pd.to_datetime(ds['Data'])
+    return ds
+
+
+def load_processed(path=PATH_PROCESSED):
+    #Table made by features.main: features + targets of the heads of the chosen model
     ds = pd.read_csv(path)
     ds['Data'] = pd.to_datetime(ds['Data'])
     return ds
@@ -104,11 +111,13 @@ def load_climate(latitude, longitude, data_inicio, data_fim, variaveis):
 
 
 def main():
+    #Step 1 of the pipeline: raw (excel) -> interim (csv). Next: features.py, train.py, predict.py
     ds = load_raw()
     ds = rename_columns(ds)
     ds  = round_float_columns(ds)
     ds = filter_rows(ds)
     ds.to_csv(PATH_INTERIM, index=False)
+    print('Interim salvo em', PATH_INTERIM, '| linhas:', len(ds))
 
 
 if __name__ == "__main__":

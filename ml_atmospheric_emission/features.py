@@ -1,5 +1,5 @@
-from ml_atmospheric_emission.config import PATH_PROCESSED
-from ml_atmospheric_emission.dataset import load_interim
+from ml_atmospheric_emission.config import CABECAS_POSSIVEIS, DIAS_SUSPEITOS, PATH_PROCESSED
+from ml_atmospheric_emission.dataset import load_interim, remove_days
 from ml_atmospheric_emission.util import convert_to_ordinal 
 import numpy as np
 import pandas as pd
@@ -209,11 +209,46 @@ def create_climate_future_columns(ds, ds_clima, colunas, cabecas):
 #Predictions of the heads before k as features (chain of heads): modeling/train.py, train_heads_chain_cv
 
 
-def main():
-    ds = load_interim()
+### Steps of the chosen model (PREVISOR_POR_CABECA in config.py) ------------------------------------------
+#Persistence heads (15 to 120 min) use only y (camera score now)
+#Model heads (180 to 360 min, base_estado) use TAGS + CALENDARIO + ESTADO
+#The other techniques (lags, sin/cos, solar, climate...) were tested in the notebook 4.0 and did not improve
+def create_head_targets(ds, cabecas):
+    ds = ds.copy()
+    #Targets of the heads only (y_15, y_30, ...): camera score k minutes later, found by the time
+    #(a missing row gives NaN, it never takes the next row by mistake)
+    ds = ds.sort_values('Data').reset_index(drop=True)
+    y_tempo = ds.set_index('Data')['y']
+    for minutos in cabecas:
+        ds['y_' + str(minutos)] = ds['Data'].map(y_tempo.shift(-minutos, freq='min'))
+    return ds
+
+
+def create_model_features(ds):
+    #Columns needed to PREDICT at the instant t: calendar, y (persistence) and camera state
     ds = create_datetime_columns(ds)
     ds = create_target(ds)
+    ds = create_state_columns(ds)
+    return ds
+
+
+def create_training_dataset(ds, cabecas):
+    #Table to TRAIN and EVALUATE the chosen model (same order of the notebooks 3.0, 4.0 and 5.0):
+    #calendar -> y -> without the suspicious days -> camera state -> targets of the heads
+    ds = create_datetime_columns(ds)
+    ds = create_target(ds)
+    ds = remove_days(ds, DIAS_SUSPEITOS)
+    ds = create_state_columns(ds)
+    ds = create_head_targets(ds, cabecas)
+    return ds
+
+
+def main():
+    #Step 2 of the pipeline: interim -> processed (features + targets of the heads)
+    ds = load_interim()
+    ds = create_training_dataset(ds, CABECAS_POSSIVEIS)
     ds.to_csv(PATH_PROCESSED, index=False)
+    print('Processed salvo em', PATH_PROCESSED, '| linhas:', len(ds), '| colunas:', ds.shape[1])
 
 
 if __name__ == "__main__":

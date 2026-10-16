@@ -1,13 +1,17 @@
 import joblib
 from lightgbm import LGBMClassifier
 import numpy as np
-from sklearn.metrics import f1_score, mean_absolute_error, precision_score, recall_score
+from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
+from sklearn.impute import SimpleImputer
+from sklearn.metrics import average_precision_score, f1_score, mean_absolute_error, precision_score, recall_score
 from sklearn.model_selection import TimeSeriesSplit
-from xgboost import XGBRegressor
+from sklearn.pipeline import make_pipeline
+from xgboost import XGBClassifier, XGBRegressor
 
 import pandas as pd
 
-from ml_atmospheric_emission.config import FEATURES, PATH_MODELS
+from ml_atmospheric_emission.config import ALGORITMO, FEATURES, FOLHA_MINIMA, MODELOS, PATH_MODELS, PREVISOR_POR_CABECA
+from ml_atmospheric_emission.dataset import load_processed
 from ml_atmospheric_emission.features import head_features
 
 
@@ -37,6 +41,130 @@ def create_model(class_weight='balanced', sorteio=False):
         verbose=-1
     )
     return model
+
+
+### Algorithms compared in the notebook 5.0 (all with parameters against overfitting) ---------------------
+#The same brake for all: each leaf with at least FOLHA_MINIMA rows (~1 day), shallow trees (boosting: depth 3,
+#200 trees, learning rate 0.05) and no random draw of rows and columns in the boosting (same data = same model)
+def create_lightgbm():
+    #LightGBM: boosting, the tree grows leaf by leaf (num_leaves=7 = the leaves of a tree of depth 3)
+    model = LGBMClassifier(
+        n_estimators=200,
+        learning_rate=0.05,
+        max_depth=3,
+        num_leaves=7,
+        min_child_samples=FOLHA_MINIMA,
+        reg_lambda=1.0,
+        random_state=42,
+        verbose=-1
+    )
+    return model
+
+
+def create_xgboost():
+    #XGBoost: boosting, the tree grows level by level
+    #min_child_weight is a sum of p*(1-p) (p = probability of plume, ~0.08): FOLHA_MINIMA / 12 is ~FOLHA_MINIMA rows
+    model = XGBClassifier(
+        n_estimators=200,
+        learning_rate=0.05,
+        max_depth=3,
+        min_child_weight=FOLHA_MINIMA / 12,
+        reg_lambda=1.0,
+        tree_method='hist',
+        random_state=42,
+        n_jobs=-1
+    )
+    return model
+
+
+def create_gradient_boosting():
+    #Gradient Boosting of sklearn (the classic one): it does not accept NaN, so the NaN of the tags
+    #receive the median of the TRAIN (SimpleImputer inside the pipeline: fitted only with the train rows)
+    model = make_pipeline(
+        SimpleImputer(strategy='median'),
+        GradientBoostingClassifier(
+            n_estimators=200,
+            learning_rate=0.05,
+            max_depth=3,
+            min_samples_leaf=FOLHA_MINIMA,
+            random_state=42
+        )
+    )
+    return model
+
+
+def create_random_forest():
+    #Random Forest: 300 independent trees, the probability is the mean of the trees. Each tree draws rows and
+    #columns (it is the method itself); 300 trees make the result stable. Leaves with at least FOLHA_MINIMA rows
+    model = RandomForestClassifier(
+        n_estimators=300,
+        max_depth=8,
+        min_samples_leaf=FOLHA_MINIMA,
+        max_features='sqrt',
+        n_jobs=-1,
+        random_state=42
+    )
+    return model
+
+
+def create_algorithm(nome):
+    #New model of the algorithm 'nome' (names of ALGORITMOS in config.py)
+    #class_weight=None everywhere: the output is closer to the real probability of plume
+    if nome == 'lightgbm':
+        return create_lightgbm()
+    if nome == 'xgboost':
+        return create_xgboost()
+    if nome == 'gradient_boosting':
+        return create_gradient_boosting()
+    if nome == 'random_forest':
+        return create_random_forest()
+    raise ValueError('Algoritmo desconhecido: ' + nome)
+
+
+def train_algorithms_cv(ds, features, cabecas, algoritmos, n_splits=5, limiar=0.5):
+    #Time series CV of each algorithm in each head, with the SAME rows and folds for all (paired comparison)
+    #ds: train period with the columns y_15, y_30, ... | features: columns of the model | cabecas: minutes ahead
+    #Returns:
+    #  tabelas = {minutos: table with fold, Data, y_true, persistencia and one column per algorithm (probability)}
+    #  ap_treino = table with the AP in the TRAIN rows (mean of the folds): far above the CV AP = overfitting
+    tabelas = {}
+    linhas_treino = []
+    for minutos in cabecas:
+        target = 'y_' + str(minutos)
+        dx = ds[ds[target].notna()].sort_values('Data').reset_index(drop=True)
+        y = (dx[target] >= limiar).astype(int)
+        colunas = head_features(features, minutos)
+        tscv = TimeSeriesSplit(n_splits=n_splits, gap=minutos // 5)
+        lista = []
+        soma_treino = {}
+        for nome in algoritmos:
+            soma_treino[nome] = 0
+        fold = 0
+        for idx_train, idx_val in tscv.split(dx):
+            if y.iloc[idx_train].nunique() < 2 or y.iloc[idx_val].sum() == 0:
+                continue
+            dy = pd.DataFrame({
+                'fold': fold,
+                'Data': dx['Data'].iloc[idx_val].values,
+                'y_true': y.iloc[idx_val].values,
+                'persistencia': dx['y'].iloc[idx_val].values
+            })
+            for nome in algoritmos:
+                model = create_algorithm(nome)
+                model.fit(dx[colunas].iloc[idx_train], y.iloc[idx_train])
+                dy[nome] = model.predict_proba(dx[colunas].iloc[idx_val])[:, 1]
+                prob_train = model.predict_proba(dx[colunas].iloc[idx_train])[:, 1]
+                soma_treino[nome] = soma_treino[nome] + average_precision_score(y.iloc[idx_train], prob_train)
+            lista.append(dy)
+            fold = fold+1
+        tabelas[minutos] = pd.concat(lista).reset_index(drop=True)
+        linha = {'minutos': minutos}
+        for nome in algoritmos:
+            linha[nome] = soma_treino[nome] / fold
+        linhas_treino.append(linha)
+        print(minutos, 'min: ok')
+    ap_treino = pd.DataFrame(linhas_treino)
+    return tabelas, ap_treino
 
 
 def create_regressor():
@@ -199,9 +327,9 @@ def train_regressor_experiment(ds, target, features=FEATURES, test_size=0.2, n_s
     return model, metricas
 
 
-def train_heads(ds, previsores, modelos, limiar=0.5):
+def train_heads(ds, previsores, modelos, algoritmo=ALGORITMO, limiar=0.5):
     #One model per head that uses a model (the persistence needs no training), saved in models/
-    #class_weight=None: the output is closer to the real probability of plume
+    #algoritmo: ALGORITMO of config.py (chosen in the notebook 5.0), class_weight=None
     for minutos in previsores:
         nome = previsores[minutos]
         if nome == 'persistencia':
@@ -210,10 +338,10 @@ def train_heads(ds, previsores, modelos, limiar=0.5):
         target = 'y_' + str(minutos)
         dx = ds[ds[target].notna()]
         y = (dx[target] >= limiar).astype(int)
-        model = create_model(class_weight=None)
+        model = create_algorithm(algoritmo)
         model.fit(dx[head_features(modelos[nome], minutos)], y)
         joblib.dump(model, PATH_MODELS / f'modelo_y_{minutos}.pkl')
-        print(minutos, 'min:', nome, '| modelo salvo: modelo_y_' + str(minutos) + '.pkl | linhas:', len(dx))
+        print(minutos, 'min:', nome, '(' + algoritmo + ') | modelo salvo: modelo_y_' + str(minutos) + '.pkl | linhas:', len(dx))
 
 
 def train_heads_cv(ds, features, cabecas, n_splits=5, limiar=0.5):
@@ -315,3 +443,14 @@ def train_heads_chain_cv(ds, features, cabecas, n_splits=5, limiar=0.5):
         resultados[minutos] = pd.concat(lista).reset_index(drop=True)
         print(minutos, 'min: cadeia com as previsoes de', anteriores)
     return resultados
+
+
+def main():
+    #Step 3 of the pipeline: processed -> models/modelo_y_<minutos>.pkl of the heads that use a model
+    #Trained with ALL the data (train + hold out): the evaluation was already done in the notebooks
+    ds = load_processed()
+    train_heads(ds, PREVISOR_POR_CABECA, MODELOS)
+
+
+if __name__ == "__main__":
+    main()

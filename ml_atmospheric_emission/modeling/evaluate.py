@@ -6,7 +6,7 @@ from sklearn.metrics import average_precision_score
 from sklearn.model_selection import TimeSeriesSplit
 
 from ml_atmospheric_emission.features import head_features
-from ml_atmospheric_emission.modeling.train import create_model, train_heads_cv
+from ml_atmospheric_emission.modeling.train import create_algorithm, create_model, train_heads_cv
 
 
 def average_precision(y_true, score):
@@ -623,3 +623,63 @@ def compare_runs(resultados_referencia, resultados_candidato, n_boot=1000, alpha
     tabela['p_holm'] = holm(tabela['p_valor'].values)
     tabela['melhoria'] = tabela['p_holm'] < alpha
     return tabela
+
+
+def compare_algorithms(tabelas, previsores_atuais, algoritmo_atual, n_boot=1000, alpha=0.05):
+    #For each head: the reference is the CURRENT forecaster: 'persistencia', or the current algorithm (ALGORITMO)
+    #in the heads that use a model. Reality Check of the best other algorithm against it, then Holm over the heads
+    #The forecaster of the head changes only if the improvement is significant
+    linhas = []
+    for minutos in tabelas:
+        algoritmos = [coluna for coluna in tabelas[minutos].columns if coluna not in ['fold', 'Data', 'y_true', 'persistencia']]
+        if previsores_atuais[minutos] == 'persistencia':
+            referencia = 'persistencia'
+        else:
+            referencia = algoritmo_atual
+        candidatos = [nome for nome in algoritmos if nome != referencia]
+        resultado = reality_check(tabelas[minutos], referencia, candidatos, n_boot)
+        linha = {'minutos': minutos, 'previsor_atual': previsores_atuais[minutos], 'referencia': referencia}
+        linha['ap_persistencia'] = ap_by_fold(tabelas[minutos], 'persistencia')
+        for nome in algoritmos:
+            linha['ap_' + nome] = ap_by_fold(tabelas[minutos], nome)
+        for chave in ['melhor', 'ganho', 'ic_inf', 'ic_sup', 'p_valor']:
+            linha[chave] = resultado[chave]
+        linhas.append(linha)
+        print(minutos, 'min | referencia:', referencia, '| melhor:', resultado['melhor'],
+              '| ganho:', round(resultado['ganho'], 3), '| p:', round(resultado['p_valor'], 3))
+    tabela = pd.DataFrame(linhas)
+    tabela['p_holm'] = holm(tabela['p_valor'].values)
+    tabela['melhoria'] = tabela['p_holm'] < alpha
+    novo = []
+    for i in range(len(tabela)):
+        if tabela['melhoria'].iloc[i]:
+            novo.append(tabela['melhor'].iloc[i])
+        else:
+            novo.append(tabela['referencia'].iloc[i])
+    tabela['nova_escolha'] = novo
+    return tabela
+
+
+def holdout_algorithms(ds_treino, ds_holdout, cabecas, features, algoritmos, limiar=0.5):
+    #Final check (used once): each algorithm trained with the whole train period, AP in the hold out
+    #(the persistence too). Only to see if the CV order holds in new days, not to choose again
+    linhas = []
+    for minutos in cabecas:
+        target = 'y_' + str(minutos)
+        treino = ds_treino[ds_treino[target].notna()]
+        teste = ds_holdout[ds_holdout[target].notna()].reset_index(drop=True)
+        y_treino = (treino[target] >= limiar).astype(int)
+        y_teste = (teste[target] >= limiar).astype(int)
+        linha = {'minutos': minutos, 'prevalencia_teste': y_teste.mean()}
+        if y_teste.sum() == 0:
+            print(minutos, 'min: o hold out nao tem pluma nesta cabeca')
+            linhas.append(linha)
+            continue
+        colunas = head_features(features, minutos)
+        linha['ap_teste_persistencia'] = average_precision(y_teste.values, teste['y'].values)
+        for nome in algoritmos:
+            model = create_algorithm(nome)
+            model.fit(treino[colunas], y_treino)
+            linha['ap_teste_' + nome] = average_precision(y_teste.values, model.predict_proba(teste[colunas])[:, 1])
+        linhas.append(linha)
+    return pd.DataFrame(linhas)

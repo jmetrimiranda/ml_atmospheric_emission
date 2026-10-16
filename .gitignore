@@ -1,0 +1,8 @@
+#Python cache (made again by Python every run, it must not go to git)
+__pycache__/
+*.py[co]
+*.egg-info/
+#Virtual environment and notebook checkpoints
+.venv/
+.ipynb_checkpoints/
+.ruff_cache/
