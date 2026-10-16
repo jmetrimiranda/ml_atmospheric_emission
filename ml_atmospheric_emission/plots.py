@@ -1,4 +1,5 @@
 import matplotlib.pyplot as plt
+import pandas as pd
 
 
 def plot_horizons(tabela, caminho, previsores=None):
@@ -43,6 +44,137 @@ def plot_horizons(tabela, caminho, previsores=None):
     ax2.set_ylabel('Diferenca de AP')
     ax2.legend(frameon=False, loc='lower right')
 
+    for ax in [ax1, ax2]:
+        ax.grid(True, alpha=0.3)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+    fig.tight_layout()
+    fig.savefig(caminho, dpi=150, bbox_inches='tight')
+    plt.show()
+
+
+def plot_factorial(tabela_decisao, efeitos, caminho):
+    #Top: for each head, gain of the best configuration over the current forecaster (95% interval)
+    #filled point = significant improvement (Reality Check + Holm), empty point = not significant
+    #Bottom: main effect of each group of features in each head (mean AP with the group - without it)
+    from matplotlib.colors import LinearSegmentedColormap
+    altura = 4 + 0.4*len(efeitos)
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(11, 4 + altura), gridspec_kw={'height_ratios': [4, altura]})
+    posicoes = list(range(len(tabela_decisao)))
+    for i in posicoes:
+        linha = tabela_decisao.iloc[i]
+        cor = '#2a78d6'
+        ax1.plot([i, i], [linha['ic_inf'], linha['ic_sup']], color=cor, linewidth=1.5)
+        if linha['melhoria']:
+            ax1.plot(i, linha['ganho'], 'o', color=cor, markersize=9)
+        else:
+            ax1.plot(i, linha['ganho'], 'o', markerfacecolor='white', markeredgecolor=cor, markeredgewidth=2, markersize=9)
+        #Name without the 'atual+' of the start (solar_atual also has 'atual' in the name)
+        nome = linha['melhor']
+        if nome.startswith('atual+'):
+            nome = nome[len('atual+'):]
+        nome = nome.replace('+', '\n')
+        ax1.annotate(nome, (i, linha['ic_sup']), xytext=(0, 4), textcoords='offset points', ha='center', va='bottom',
+                     fontsize=7, color='#333333')
+    ax1.axhline(0, color='#555555', linewidth=1)
+    rotulos = [str(m) + ' min\n(' + str(p) + ')' for m, p in zip(tabela_decisao['minutos'], tabela_decisao['previsor_atual'])]
+    ax1.set_xticks(posicoes)
+    ax1.set_xticklabels(rotulos, fontsize=8)
+    ax1.set_ylabel('Ganho de AP sobre o previsor atual')
+    ax1.set_title('Melhor configuracao de cada cabeca: ganho e intervalo de 95% do melhor (sem ajuste pela escolha entre muitas)\n'
+                  'cheio = melhoria significativa (Reality Check + Holm), vazio = nao significativa', fontsize=10)
+    ax1.grid(True, axis='y', alpha=0.3)
+    ax1.spines['top'].set_visible(False)
+    ax1.spines['right'].set_visible(False)
+    margem = (tabela_decisao['ic_sup'].max() - tabela_decisao['ic_inf'].min()) * 0.35
+    ax1.set_ylim(tabela_decisao['ic_inf'].min() - 0.01, tabela_decisao['ic_sup'].max() + margem)
+
+    #Diverging colors: red = the group lowers the AP, gray = no effect, blue = the group raises the AP
+    cores = LinearSegmentedColormap.from_list('divergente', ['#e34948', '#f0efec', '#2a78d6'])
+    limite = max(abs(efeitos.values.min()), abs(efeitos.values.max()))
+    imagem = ax2.imshow(efeitos.values, cmap=cores, vmin=-limite, vmax=limite, aspect='auto')
+    for i in range(efeitos.shape[0]):
+        for j in range(efeitos.shape[1]):
+            ax2.text(j, i, f'{efeitos.values[i, j]:+.3f}', ha='center', va='center', fontsize=8, color='#222222')
+    ax2.set_xticks(range(efeitos.shape[1]))
+    ax2.set_xticklabels([str(m) + ' min' for m in efeitos.columns], fontsize=8)
+    ax2.set_yticks(range(efeitos.shape[0]))
+    ax2.set_yticklabels(efeitos.index, fontsize=9)
+    ax2.set_title('Efeito principal de cada grupo de features (AP com o grupo - sem o grupo)')
+    fig.colorbar(imagem, ax=ax2, label='Diferenca de AP', shrink=0.8)
+    fig.tight_layout()
+    fig.savefig(caminho, dpi=150, bbox_inches='tight')
+    plt.show()
+
+
+def plot_columns(ds, paineis, inicio, dias, caminho, titulo):
+    #Some days of the chosen columns, one panel per list of columns
+    #Gray band = plume (camera score >= 0.5), to see each feature next to the target
+    cores = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100']
+    fim = pd.Timestamp(inicio) + pd.Timedelta(days=dias)
+    dx = ds[(ds['Data'] >= pd.Timestamp(inicio)) & (ds['Data'] < fim)].sort_values('Data')
+    fig, eixos = plt.subplots(len(paineis), 1, figsize=(11, 2.8*len(paineis)), sharex=True, squeeze=False)
+    cont = 0
+    for colunas in paineis:
+        ax = eixos[cont, 0]
+        ax.fill_between(dx['Data'], 0, 1, where=(dx['y'] >= 0.5).values, transform=ax.get_xaxis_transform(),
+                        color='#bbbbbb', alpha=0.4, linewidth=0, label='pluma (score >= 0,5)')
+        i = 0
+        for coluna in colunas:
+            ax.plot(dx['Data'], dx[coluna], color=cores[i % len(cores)], linewidth=1.6, label=coluna)
+            i = i+1
+        ax.legend(frameon=False, fontsize=8, loc='upper left', bbox_to_anchor=(1.01, 1))
+        ax.grid(True, alpha=0.3)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        cont = cont+1
+    eixos[0, 0].set_title(titulo)
+    fig.tight_layout()
+    fig.savefig(caminho, dpi=150, bbox_inches='tight')
+    plt.show()
+
+
+def plot_model_features(tabela_persistencia, tabela_cadeia, caminho):
+    #Top: AP of each head (mean by fold of the CV) of the persistence (forecaster), of the model without the
+    #persistence as a feature, of the current model and of the chain (current model + predictions of the heads before)
+    #Bottom: gain of each test with the 95% interval (filled = significant after Holm, empty = not significant)
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
+    ax1.plot(tabela_persistencia['minutos'], tabela_persistencia['ap_persistencia'], color='#2a78d6', linestyle='--',
+             linewidth=2, marker='o', markersize=4, label='persistencia (score agora, como previsor)')
+    ax1.plot(tabela_persistencia['minutos'], tabela_persistencia['ap_referencia'], color='#eb6834', linewidth=2,
+             marker='o', markersize=4, label='modelo SEM a persistencia como feature')
+    ax1.plot(tabela_persistencia['minutos'], tabela_persistencia['ap_candidato'], color='#1baf7a', linewidth=2,
+             marker='o', markersize=4, label='MODELO_ATUAL (com a persistencia)')
+    ax1.plot(tabela_cadeia['minutos'], tabela_cadeia['ap_candidato'], color='#eda100', linewidth=2,
+             marker='o', markersize=4, label='MODELO_ATUAL + previsoes das cabecas anteriores')
+    ax1.set_title('AP no CV temporal por cabeca')
+    ax1.set_ylabel('AP (media dos folds)')
+    ax1.set_ylim(0, None)
+    ax1.legend(frameon=False, fontsize=8, loc='upper right')
+
+    deslocamento = -4
+    for tabela, nome, cor in [(tabela_persistencia, 'efeito da persistencia (com - sem)', '#1baf7a'),
+                              (tabela_cadeia, 'efeito da cadeia (com previsoes anteriores - atual)', '#eda100')]:
+        primeiro = True
+        for i in range(len(tabela)):
+            linha = tabela.iloc[i]
+            x = linha['minutos'] + deslocamento
+            ax2.plot([x, x], [linha['ic_inf'], linha['ic_sup']], color=cor, linewidth=1.5)
+            rotulo = None
+            if primeiro:
+                rotulo = nome
+                primeiro = False
+            if linha['melhoria']:
+                ax2.plot(x, linha['ganho'], 'o', color=cor, markersize=8, label=rotulo)
+            else:
+                ax2.plot(x, linha['ganho'], 'o', markerfacecolor='white', markeredgecolor=cor, markeredgewidth=2,
+                         markersize=8, label=rotulo)
+        deslocamento = 4
+    ax2.axhline(0, color='#555555', linewidth=1)
+    ax2.set_title('Ganho de AP (intervalo de 95%, bootstrap por dias; cheio = significativo com Holm)')
+    ax2.set_xlabel('Minutos no futuro (cabeca)')
+    ax2.set_ylabel('Diferenca de AP')
+    ax2.legend(frameon=False, fontsize=8, loc='upper right')
     for ax in [ax1, ax2]:
         ax.grid(True, alpha=0.3)
         ax.spines['top'].set_visible(False)

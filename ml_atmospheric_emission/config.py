@@ -61,3 +61,30 @@ PREVISOR_POR_CABECA = {
     360: 'base_estado'
 }
 MODELO_ATUAL = TAGS + CALENDARIO + ESTADO
+
+#Feature engineering tested in notebooks/4.0-jm-escolha-melhores-features.ipynb
+LAG_MINUTOS = [15, 30, 60]
+DERIVADA_MINUTOS = [15, 60]
+#Position of the plant to create the solar coordinates (south and west negative)
+LATITUDE = -20.79
+LONGITUDE = -40.58
+#Time zone of the column 'Data' (Brasilia = -3, no daylight saving time since 2019)
+FUSO_HORAS = -3
+#Solar coordinates (made by features.create_solar_columns): the azimuth is cyclic, so it goes as sin and cos
+SOLAR = ['elevacao_solar', 'azimute_sin', 'azimute_cos']
+
+#Climate of Open-Meteo (data/external): hourly variables, names of the API
+#wind_direction_10m is cyclic (degrees): the model receives its sin and cos, never the raw degrees
+PATH_EXTERNAL = PROJ_ROOT / "data/external"
+CLIMA_VARIAVEIS = [
+    'temperature_2m', 'relative_humidity_2m', 'dew_point_2m', 'pressure_msl', 'cloud_cover',
+    'precipitation', 'wind_speed_10m', 'wind_direction_10m', 'shortwave_radiation'
+]
+#Climate columns used by the model (made by features.prepare_climate)
+CLIMA = [
+    'temperature_2m', 'relative_humidity_2m', 'dew_point_2m', 'pressure_msl', 'cloud_cover',
+    'precipitation', 'wind_speed_10m', 'wind_direction_10m_sin', 'wind_direction_10m_cos', 'shortwave_radiation'
+]
+#The climate is hourly: lags and derivatives in hours (15 minutes ago is the same hour, the same value)
+CLIMA_LAG_MINUTOS = [60, 180]
+CLIMA_DERIVADA_MINUTOS = [60, 180]

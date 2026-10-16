@@ -3,3 +3,4 @@ pip
 python-dotenv
 ruff
 -e .
+requests

@@ -5,21 +5,32 @@ from sklearn.metrics import f1_score, mean_absolute_error, precision_score, reca
 from sklearn.model_selection import TimeSeriesSplit
 from xgboost import XGBRegressor
 
+import pandas as pd
+
 from ml_atmospheric_emission.config import FEATURES, PATH_MODELS
+from ml_atmospheric_emission.features import head_features
 
 
-def create_model(class_weight='balanced'):
+def create_model(class_weight='balanced', sorteio=False):
     #Tree model with conservative parameters to avoid overfitting
     #class_weight=None gives probabilities closer to the real chance of smog (used to recommend)
+    #sorteio=False (default): no random draw of rows and columns (subsample = colsample_bytree = 1), so the same data
+    #always gives the same model and a comparison of features changes ONLY the features
+    #(with the draw of 0.8, changing only the random_state gave "significant improvement" in 19% of the tests,
+    #and without the draw the AP of the CV was higher in the 8 heads). sorteio=True: the old version
+    if sorteio:
+        fracao = 0.8
+    else:
+        fracao = 1.0
     model = LGBMClassifier(
         n_estimators=200,
         learning_rate=0.05,
         max_depth=4,
         num_leaves=15,
         min_child_samples=100,
-        subsample=0.8,
+        subsample=fracao,
         subsample_freq=1,
-        colsample_bytree=0.8,
+        colsample_bytree=fracao,
         reg_lambda=1.0,
         class_weight=class_weight,
         random_state=42,
@@ -200,6 +211,107 @@ def train_heads(ds, previsores, modelos, limiar=0.5):
         dx = ds[ds[target].notna()]
         y = (dx[target] >= limiar).astype(int)
         model = create_model(class_weight=None)
-        model.fit(dx[modelos[nome]], y)
+        model.fit(dx[head_features(modelos[nome], minutos)], y)
         joblib.dump(model, PATH_MODELS / f'modelo_y_{minutos}.pkl')
         print(minutos, 'min:', nome, '| modelo salvo: modelo_y_' + str(minutos) + '.pkl | linhas:', len(dx))
+
+
+def train_heads_cv(ds, features, cabecas, n_splits=5, limiar=0.5):
+    #Time series CV of one model (create_model) per head: each fold is predicted only with the past
+    #ds: train period with the columns y_15, y_30, ... | features: columns of the model | cabecas: minutes ahead
+    #Returns a dict {minutos: table with fold, Data, y_true, persistencia and modelo (probability)}
+    resultados = {}
+    for minutos in cabecas:
+        target = 'y_' + str(minutos)
+        dx = ds[ds[target].notna()].sort_values('Data').reset_index(drop=True)
+        y = (dx[target] >= limiar).astype(int)
+        #Columns x_futuro become x_futuro_<minutos> (solar and climate at the instant t + k)
+        colunas = head_features(features, minutos)
+        #gap = horizon in rows (5 minutes each): the train never sees a target inside the validation
+        tscv = TimeSeriesSplit(n_splits=n_splits, gap=minutos // 5)
+        lista = []
+        fold = 0
+        for idx_train, idx_val in tscv.split(dx):
+            #Skipping folds with only one class
+            if y.iloc[idx_train].nunique() < 2 or y.iloc[idx_val].sum() == 0:
+                continue
+            model = create_model(class_weight=None)
+            model.fit(dx[colunas].iloc[idx_train], y.iloc[idx_train])
+            dy = pd.DataFrame({
+                'fold': fold,
+                'Data': dx['Data'].iloc[idx_val].values,
+                'y_true': y.iloc[idx_val].values,
+                'persistencia': dx['y'].iloc[idx_val].values,
+                'modelo': model.predict_proba(dx[colunas].iloc[idx_val])[:, 1]
+            })
+            lista.append(dy)
+            fold = fold+1
+        resultados[minutos] = pd.concat(lista).reset_index(drop=True)
+    return resultados
+
+
+def out_of_fold(X, alvo, gap, n_blocos=5, limiar=0.5):
+    #Prediction of each row by a model trained only with the PAST of the row (time series CV, with gap),
+    #like in the validation and in production. The first block has no past: NaN (the LightGBM accepts NaN)
+    #alvo: score of the camera (continuous). Rows without alvo (NaN) are not used to train, but are predicted
+    previsao = np.full(len(X), np.nan)
+    blocos = TimeSeriesSplit(n_splits=n_blocos, gap=gap)
+    for idx_fit, idx_pred in blocos.split(X):
+        ok = alvo.iloc[idx_fit].notna().values
+        y_fit = (alvo.iloc[idx_fit][ok] >= limiar).astype(int)
+        if y_fit.nunique() < 2:
+            continue
+        model = create_model(class_weight=None)
+        model.fit(X.iloc[idx_fit][ok], y_fit)
+        previsao[idx_pred] = model.predict_proba(X.iloc[idx_pred])[:, 1]
+    return previsao
+
+
+def train_heads_chain_cv(ds, features, cabecas, n_splits=5, limiar=0.5):
+    #Chain of heads: the model of the head k also receives the PREDICTIONS of the heads before k
+    #(the 60 min head receives the probability of plume predicted for 15 and 30 min: columns prev_15, prev_30)
+    #No leak: in each fold the predictions of the previous heads come from models trained only with the train rows,
+    #and in the train rows they come from models of the past of each row (out_of_fold), like in the validation
+    #Same rows and folds of train_heads_cv, so the two results are compared paired (compare_runs)
+    #The first head has no head before it (its "previous prediction" is the persistence, already in score_atual)
+    resultados = {}
+    for minutos in cabecas:
+        anteriores = [cabeca for cabeca in cabecas if cabeca < minutos]
+        if len(anteriores) == 0:
+            continue
+        target = 'y_' + str(minutos)
+        dx = ds[ds[target].notna()].sort_values('Data').reset_index(drop=True)
+        y = (dx[target] >= limiar).astype(int)
+        colunas = head_features(features, minutos)
+        tscv = TimeSeriesSplit(n_splits=n_splits, gap=minutos // 5)
+        lista = []
+        fold = 0
+        for idx_train, idx_val in tscv.split(dx):
+            if y.iloc[idx_train].nunique() < 2 or y.iloc[idx_val].sum() == 0:
+                continue
+            X_train = dx[colunas].iloc[idx_train].copy()
+            X_val = dx[colunas].iloc[idx_val].copy()
+            for anterior in anteriores:
+                colunas_anterior = head_features(features, anterior)
+                alvo_anterior = dx['y_' + str(anterior)].iloc[idx_train]
+                #Train rows: out of fold prediction of the previous head
+                X_train['prev_' + str(anterior)] = out_of_fold(dx[colunas_anterior].iloc[idx_train], alvo_anterior, anterior // 5)
+                #Validation rows: model of the previous head trained with all the train rows
+                ok = alvo_anterior.notna().values
+                model = create_model(class_weight=None)
+                model.fit(dx[colunas_anterior].iloc[idx_train][ok], (alvo_anterior[ok] >= limiar).astype(int))
+                X_val['prev_' + str(anterior)] = model.predict_proba(dx[colunas_anterior].iloc[idx_val])[:, 1]
+            model = create_model(class_weight=None)
+            model.fit(X_train, y.iloc[idx_train])
+            dy = pd.DataFrame({
+                'fold': fold,
+                'Data': dx['Data'].iloc[idx_val].values,
+                'y_true': y.iloc[idx_val].values,
+                'persistencia': dx['y'].iloc[idx_val].values,
+                'modelo': model.predict_proba(X_val)[:, 1]
+            })
+            lista.append(dy)
+            fold = fold+1
+        resultados[minutos] = pd.concat(lista).reset_index(drop=True)
+        print(minutos, 'min: cadeia com as previsoes de', anteriores)
+    return resultados

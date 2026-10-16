@@ -1,9 +1,28 @@
+import itertools
+
 import numpy as np
 import pandas as pd
 from sklearn.metrics import average_precision_score
 from sklearn.model_selection import TimeSeriesSplit
 
-from ml_atmospheric_emission.modeling.train import create_model
+from ml_atmospheric_emission.features import head_features
+from ml_atmospheric_emission.modeling.train import create_model, train_heads_cv
+
+
+def average_precision(y_true, score):
+    #Same result as sklearn average_precision_score, but much faster (the bootstrap calls it many times)
+    y_true = np.asarray(y_true)
+    score = np.asarray(score)
+    ordem = np.argsort(-score, kind='mergesort')
+    score = score[ordem]
+    y_true = y_true[ordem]
+    #Thresholds: the last position of each distinct score value (ties are one threshold)
+    ultimos = np.r_[np.where(np.diff(score) != 0)[0], len(score) - 1]
+    verdadeiros = np.cumsum(y_true)[ultimos]
+    precisao = verdadeiros / (ultimos + 1)
+    recall = verdadeiros / verdadeiros[-1]
+    recall_anterior = np.r_[0, recall[:-1]]
+    return np.sum((recall - recall_anterior) * precisao)
 
 
 def target_name(deslocamento_):
@@ -209,7 +228,7 @@ def ap_by_fold(ds_oof, coluna):
     lista_ap = []
     for fold in ds_oof['fold'].unique():
         dx = ds_oof[ds_oof['fold'] == fold]
-        lista_ap.append(average_precision_score(dx['y_true'], dx[coluna]))
+        lista_ap.append(average_precision(dx['y_true'].values, dx[coluna].values))
     return np.mean(lista_ap)
 
 
@@ -240,7 +259,7 @@ def bootstrap_days(ds_oof, colunas, n_boot=1000, seed=42):
                 valido = False
                 break
             for coluna in colunas:
-                soma[coluna] = soma[coluna] + average_precision_score(y_true[indices], ds_oof[coluna].values[indices])
+                soma[coluna] = soma[coluna] + average_precision(y_true[indices], ds_oof[coluna].values[indices])
         if not valido:
             continue
         linha = {}
@@ -383,3 +402,224 @@ def save_horizon_report(tabela_cv, tabela_teste, previsores, info, pasta):
     with open(caminho, 'w', encoding='utf-8') as arquivo:
         arquivo.write(texto)
     print('Report salvo em', caminho)
+
+
+def factorial_configurations(base, grupos):
+    #All the combinations of the groups (each group in or out): 2^len(grupos) configurations
+    #Returns {name: list of columns}. 'atual' is the base without any group
+    nomes = list(grupos.keys())
+    configuracoes = {}
+    for combinacao in itertools.product([0, 1], repeat=len(nomes)):
+        features = list(base)
+        partes = []
+        for i in range(len(nomes)):
+            if combinacao[i] == 1:
+                features = features + grupos[nomes[i]]
+                partes.append(nomes[i])
+        if len(partes) == 0:
+            nome = 'atual'
+        else:
+            nome = 'atual+' + '+'.join(partes)
+        configuracoes[nome] = features
+    print('Configuracoes:', len(configuracoes), '= 2 ^', len(nomes))
+    return configuracoes
+
+
+def factorial_blocks(base, blocos):
+    #Factorial by blocks: ALL the combinations inside each block (2^n of each block), on top of the base
+    #blocos = {block name: {group name: columns}}. 'atual' (the base alone) is in every block, so it appears once
+    #Combinations of groups of DIFFERENT blocks are not tested (it would be 2^(all the groups))
+    configuracoes = {}
+    for nome_bloco in blocos:
+        print('Bloco', nome_bloco, '| grupos:', list(blocos[nome_bloco].keys()))
+        configuracoes_bloco = factorial_configurations(base, blocos[nome_bloco])
+        for nome in configuracoes_bloco:
+            configuracoes[nome] = configuracoes_bloco[nome]
+    print('Total de configuracoes (a atual uma vez so):', len(configuracoes))
+    return configuracoes
+
+
+def factorial_cv(ds, configuracoes, cabecas):
+    #Runs train_heads_cv for every configuration and joins the predictions of each head in one table
+    #(all configurations have the same rows and folds, so the comparison is paired)
+    #Returns {minutos: table with fold, Data, y_true, persistencia and one column per configuration}
+    tabelas = {}
+    cont = 1
+    for nome in configuracoes:
+        resultados = train_heads_cv(ds, configuracoes[nome], cabecas)
+        for minutos in cabecas:
+            if minutos not in tabelas:
+                tabelas[minutos] = resultados[minutos][['fold', 'Data', 'y_true', 'persistencia']].copy()
+            tabelas[minutos][nome] = resultados[minutos]['modelo'].values
+        print(cont, '/', len(configuracoes), nome)
+        cont = cont+1
+    return tabelas
+
+
+def reality_check(ds_oof, referencia, candidatos, n_boot=1000, seed=42):
+    #Is the BEST candidate better than the reference? (White's Reality Check, with the bootstrap by days)
+    #Testing many configurations, one of them looks better just by chance:
+    #the test compares the best real gain with the best gain that appears by chance in the bootstrap
+    ds_boot = bootstrap_days(ds_oof, [referencia] + candidatos, n_boot, seed)
+    ganho_real = {}
+    for nome in candidatos:
+        ganho_real[nome] = ap_by_fold(ds_oof, nome) - ap_by_fold(ds_oof, referencia)
+    melhor = max(ganho_real, key=ganho_real.get)
+    #Bootstrap gains centered on the real gains: how the best gain looks when there is no real improvement
+    maximo_acaso = np.full(len(ds_boot), -np.inf)
+    for nome in candidatos:
+        ganho_boot = ds_boot[nome].values - ds_boot[referencia].values
+        maximo_acaso = np.maximum(maximo_acaso, ganho_boot - ganho_real[nome])
+    p_valor = (1 + np.sum(maximo_acaso >= ganho_real[melhor])) / (1 + len(ds_boot))
+    diferenca = ds_boot[melhor].values - ds_boot[referencia].values
+    resultado = {
+        'ap_referencia': ap_by_fold(ds_oof, referencia),
+        'melhor': melhor,
+        'ap_melhor': ap_by_fold(ds_oof, melhor),
+        'ganho': ganho_real[melhor],
+        'ic_inf': np.percentile(diferenca, 2.5),
+        'ic_sup': np.percentile(diferenca, 97.5),
+        'p_valor': p_valor
+    }
+    return resultado
+
+
+def find_configuration(configuracoes, features):
+    #Name of the configuration that has exactly these columns (None if no configuration has them)
+    for nome in configuracoes:
+        if set(configuracoes[nome]) == set(features):
+            return nome
+    return None
+
+
+def choose_new_forecasters(tabelas, configuracoes, previsores_atuais, modelos, n_boot=1000, alpha=0.05):
+    #For each head: the reference is the CURRENT forecaster of the head:
+    #'persistencia', or the configuration with the same columns as modelos[current forecaster]
+    #Reality Check of the best configuration against it, then Holm over the heads.
+    #The forecaster of the head changes only if the improvement is significant
+    linhas = []
+    for minutos in tabelas:
+        if previsores_atuais[minutos] == 'persistencia':
+            referencia = 'persistencia'
+            candidatos = list(configuracoes.keys())
+        else:
+            referencia = find_configuration(configuracoes, modelos[previsores_atuais[minutos]])
+            if referencia is None:
+                print(minutos, 'min: o previsor atual', previsores_atuais[minutos], 'nao esta entre as configuracoes testadas')
+                continue
+            candidatos = [nome for nome in configuracoes if nome != referencia]
+        resultado = reality_check(tabelas[minutos], referencia, candidatos, n_boot)
+        resultado['minutos'] = minutos
+        resultado['previsor_atual'] = previsores_atuais[minutos]
+        resultado['referencia'] = referencia
+        linhas.append(resultado)
+        print(minutos, 'min | referencia:', referencia, '| melhor:', resultado['melhor'],
+              '| ganho:', round(resultado['ganho'], 3), '| p:', round(resultado['p_valor'], 3))
+    tabela = pd.DataFrame(linhas)
+    tabela['p_holm'] = holm(tabela['p_valor'].values)
+    tabela['melhoria'] = tabela['p_holm'] < alpha
+    novo_previsor = []
+    for i in range(len(tabela)):
+        if tabela['melhoria'].iloc[i]:
+            #If the winner has the same columns as a model that already exists in modelos, use that name
+            nome = tabela['melhor'].iloc[i]
+            for nome_modelo in modelos:
+                if set(modelos[nome_modelo]) == set(configuracoes[nome]):
+                    nome = nome_modelo
+            novo_previsor.append(nome)
+        else:
+            novo_previsor.append(tabela['previsor_atual'].iloc[i])
+    tabela['novo_previsor'] = novo_previsor
+    colunas = ['minutos', 'previsor_atual', 'referencia', 'ap_referencia', 'melhor', 'ap_melhor',
+               'ganho', 'ic_inf', 'ic_sup', 'p_valor', 'p_holm', 'melhoria', 'novo_previsor']
+    return tabela[colunas]
+
+
+def main_effects(tabelas, grupos):
+    #Factorial analysis: for each group and head, mean AP of the configurations WITH the group
+    #minus the mean AP of the configurations WITHOUT it (the average gain of turning the group on)
+    #Only the configurations made with the groups of grupos (in the factorial by blocks: the block of the group)
+    efeitos = pd.DataFrame(index=list(grupos.keys()))
+    for minutos in tabelas:
+        configuracoes = []
+        for coluna in tabelas[minutos].columns:
+            if not coluna.startswith('atual'):
+                continue
+            dentro = True
+            for parte in coluna.split('+')[1:]:
+                if parte not in grupos:
+                    dentro = False
+            if dentro:
+                configuracoes.append(coluna)
+        ap = {}
+        for nome in configuracoes:
+            ap[nome] = ap_by_fold(tabelas[minutos], nome)
+        for grupo in grupos:
+            com = [ap[nome] for nome in configuracoes if grupo in nome.split('+')]
+            sem = [ap[nome] for nome in configuracoes if grupo not in nome.split('+')]
+            efeitos.loc[grupo, minutos] = np.mean(com) - np.mean(sem)
+    return efeitos.astype(float)
+
+
+def holdout_compare(ds_treino, ds_holdout, minutos, features_novas, features_referencia, n_boot=1000, limiar=0.5):
+    #Final check of a change (used only once): train on the whole train period, compare on the hold out
+    #features_referencia = None means the reference is the persistence
+    target = 'y_' + str(minutos)
+    treino = ds_treino[ds_treino[target].notna()]
+    teste = ds_holdout[ds_holdout[target].notna()].reset_index(drop=True)
+    y_treino = (treino[target] >= limiar).astype(int)
+    y_teste = (teste[target] >= limiar).astype(int)
+    if y_teste.sum() == 0:
+        print(minutos, 'min: o hold out nao tem pluma nesta cabeca, nada para comparar')
+        return {'minutos': minutos, 'ap_teste_novo': np.nan, 'ap_teste_referencia': np.nan, 'ic_inf': np.nan, 'ic_sup': np.nan}
+    ds_teste = pd.DataFrame({'fold': 0, 'Data': teste['Data'], 'y_true': y_teste})
+    colunas_novas = head_features(features_novas, minutos)
+    model = create_model(class_weight=None)
+    model.fit(treino[colunas_novas], y_treino)
+    ds_teste['novo'] = model.predict_proba(teste[colunas_novas])[:, 1]
+    if features_referencia is None:
+        ds_teste['referencia'] = teste['y'].values
+    else:
+        colunas_referencia = head_features(features_referencia, minutos)
+        model = create_model(class_weight=None)
+        model.fit(treino[colunas_referencia], y_treino)
+        ds_teste['referencia'] = model.predict_proba(teste[colunas_referencia])[:, 1]
+    ds_boot = bootstrap_days(ds_teste, ['novo', 'referencia'], n_boot)
+    diferenca = ds_boot['novo'] - ds_boot['referencia']
+    resultado = {
+        'minutos': minutos,
+        'ap_teste_novo': average_precision(ds_teste['y_true'].values, ds_teste['novo'].values),
+        'ap_teste_referencia': average_precision(ds_teste['y_true'].values, ds_teste['referencia'].values),
+        'ic_inf': np.percentile(diferenca, 2.5),
+        'ic_sup': np.percentile(diferenca, 97.5)
+    }
+    return resultado
+
+
+def compare_runs(resultados_referencia, resultados_candidato, n_boot=1000, alpha=0.05):
+    #Paired test of two results of train_heads_cv (same rows and folds) in each head of the candidate:
+    #is the candidate better than the reference? Bootstrap by days of (candidate - reference).
+    #p-value = fraction of the bootstrap where the candidate is NOT better (same rule of the notebook 3.0,
+    #it agrees with the 95% interval), then Holm over the heads. The AP of the persistence goes as context
+    linhas = []
+    for minutos in resultados_candidato:
+        ds_oof = resultados_referencia[minutos].rename(columns={'modelo': 'referencia'})
+        if not (ds_oof['Data'].values == resultados_candidato[minutos]['Data'].values).all():
+            raise ValueError(str(minutos) + ' min: as duas rodadas nao tem as mesmas linhas')
+        ds_oof['candidato'] = resultados_candidato[minutos]['modelo'].values
+        ds_boot = bootstrap_days(ds_oof, ['referencia', 'candidato'], n_boot)
+        diferenca = ds_boot['candidato'] - ds_boot['referencia']
+        linhas.append({
+            'minutos': minutos,
+            'ap_persistencia': ap_by_fold(ds_oof, 'persistencia'),
+            'ap_referencia': ap_by_fold(ds_oof, 'referencia'),
+            'ap_candidato': ap_by_fold(ds_oof, 'candidato'),
+            'ganho': ap_by_fold(ds_oof, 'candidato') - ap_by_fold(ds_oof, 'referencia'),
+            'ic_inf': np.percentile(diferenca, 2.5),
+            'ic_sup': np.percentile(diferenca, 97.5),
+            'p_valor': (1 + np.sum(diferenca <= 0)) / (1 + len(diferenca))
+        })
+    tabela = pd.DataFrame(linhas)
+    tabela['p_holm'] = holm(tabela['p_valor'].values)
+    tabela['melhoria'] = tabela['p_holm'] < alpha
+    return tabela
