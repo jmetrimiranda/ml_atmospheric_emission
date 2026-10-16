@@ -116,6 +116,7 @@ def main():
     ds = rename_columns(ds)
     ds  = round_float_columns(ds)
     ds = filter_rows(ds)
+    PATH_INTERIM.parent.mkdir(parents=True, exist_ok=True)
     ds.to_csv(PATH_INTERIM, index=False)
     print('Interim salvo em', PATH_INTERIM, '| linhas:', len(ds))
 

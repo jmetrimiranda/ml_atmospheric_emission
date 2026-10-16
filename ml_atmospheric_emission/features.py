@@ -247,6 +247,7 @@ def main():
     #Step 2 of the pipeline: interim -> processed (features + targets of the heads)
     ds = load_interim()
     ds = create_training_dataset(ds, CABECAS_POSSIVEIS)
+    PATH_PROCESSED.parent.mkdir(parents=True, exist_ok=True)
     ds.to_csv(PATH_PROCESSED, index=False)
     print('Processed salvo em', PATH_PROCESSED, '| linhas:', len(ds), '| colunas:', ds.shape[1])
 

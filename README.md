@@ -9,39 +9,83 @@ ajustes nas tags de processo para baixar o risco de pluma.
 
 ## Como usar
 
-### 1. Instalar
+### 1. Instalar (uma vez)
 
 ```bash
 git clone https://github.com/jmetrimiranda/ml_atmospheric_emission
 cd ml_atmospheric_emission
 python3 -m venv .venv
-source .venv/bin/activate
-pip install -e .
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+pip install -e .                   # instala as dependencias e cria o comando pluma
 ```
 
-### 2. Treinar (com os dados de `data/raw/Tags_Pluma.xlsx`)
+### 2. Rodar (terminal)
 
 ```bash
-pluma treinar        # raw -> interim -> processed -> models/
+pluma treinar      # Excel de data/raw -> data/interim -> data/processed -> models/ (modelos + limiares)
+pluma prever       # probabilidade e alarme de pluma em cada cabeca, no ultimo instante de data/interim
+pluma recomendar   # ajustes nas tags que baixam o risco (hipotese, ver o limite abaixo)
+pluma tudo         # os tres
 ```
 
-### 3. Prever e recomendar (ultimo instante de `data/interim`)
+`make pipeline` faz o mesmo que `pluma tudo`.
 
-```bash
-pluma prever         # probabilidade de pluma em cada cabeca (15 a 360 min)
-pluma recomendar     # ajustes nas tags que baixam o risco
-pluma tudo           # os tres passos
-```
-
-### 4. Usar no Python (por exemplo, com dados novos de 5 em 5 minutos)
+### 3. Usar no Python
 
 ```python
-from ml_atmospheric_emission.pipeline import prever, recomendar
+from ml_atmospheric_emission.pipeline import treinar, prever, recomendar
 
-#ds: colunas Data (hora local), nn_score_smog e as TAGS do config.py, com pelo menos os ultimos 30 minutos
-previsoes = prever(ds)           #uma linha por instante, colunas prob_15 ... prob_360
-recomendacao = recomendar(ds)    #dict: risco_atual, risco_recomendado, mudancas, risco_por_cabeca
+#ds: tabela de 5 em 5 minutos com Data (hora local), nn_score_smog e as 6 TAGS do config.py
+#(o mesmo formato de data/interim), com pelo menos os ultimos 30 minutos
+treinar()                      #ou treinar(ds_historico) para treinar com uma tabela em vez do Excel
+previsoes = prever(ds)         #colunas prob_15 ... prob_360 e alarme_15 ... alarme_360 (1 = alarme)
+recomendacao = recomendar(ds)  #dict: risco_atual, risco_recomendado, mudancas, risco_por_cabeca
 ```
+
+### 4. O que sai
+
+`prob_<k>` = probabilidade de pluma k minutos a frente (persistencia: o score da camera agora).
+`alarme_<k>` = 1 se `prob_<k>` >= limiar da cabeca. Os limiares sao escolhidos no treino com o maximo F1
+(`BETA_LIMIAR = 1`) e ficam em `models/limiares.json`.
+
+| Cabeca | Previsor | Teste (hold out): AP | precisao | recall | F1 |
+|---|---|---|---|---|---|
+| 15 min | persistencia | 0,72 | 0,71 | 0,71 | 0,71 |
+| 30 min | persistencia | 0,63 | 0,64 | 0,64 | 0,64 |
+| 60 min | persistencia | 0,47 | 0,53 | 0,55 | 0,54 |
+| 90 min | LightGBM | 0,51 | 0,53 | 0,59 | 0,56 |
+| 120 min | LightGBM | 0,47 | 0,38 | 0,75 | 0,51 |
+| 180 min | LightGBM | 0,45 | 0,30 | 0,92 | 0,45 |
+| 240 min | LightGBM | 0,41 | 0,29 | 0,85 | 0,43 |
+| 360 min | LightGBM | 0,51 | 0,31 | 0,93 | 0,46 |
+Detalhes: `notebooks/7.0-jm-performance.ipynb`.
+
+### 5. Databricks
+
+1. Gerar o pacote: `make wheel` (cria `dist/ml_atmospheric_emission-1.0.0-py3-none-any.whl`).
+2. Subir o `.whl` e a pasta de trabalho (com `data/raw`, `data/interim`, `data/processed` e `models/`) para um Volume
+   do Unity Catalog, por exemplo `/Volumes/<catalogo>/<schema>/pluma/`.
+3. Num notebook do Databricks:
+
+```python
+%pip install /Volumes/<catalogo>/<schema>/pluma/ml_atmospheric_emission-1.0.0-py3-none-any.whl
+dbutils.library.restartPython()
+```
+
+```python
+import os
+os.environ['PLUMA_PASTA'] = '/Volumes/<catalogo>/<schema>/pluma'   #ANTES de importar o pacote
+
+from ml_atmospheric_emission.pipeline import treinar, prever, recomendar
+ds = spark.table('<catalogo>.<schema>.tags_pluma').toPandas()      #Data, nn_score_smog e as TAGS
+treinar(ds)                                                         #treina no proprio Databricks
+previsoes = prever(ds)
+spark.createDataFrame(previsoes).write.mode('append').saveAsTable('<catalogo>.<schema>.previsoes_pluma')
+```
+
+4. Agendar com um Job (por exemplo, `prever` a cada 5 minutos e `treinar` uma vez por semana).
+
+Treine no proprio ambiente onde vai prever: um modelo salvo (`.pkl`) depende das versoes do scikit-learn e do LightGBM.
 
 ### Onde estao as decisoes
 
@@ -53,20 +97,30 @@ Tudo o que foi decidido nos notebooks fica no `ml_atmospheric_emission/config.py
 | `PREVISOR_POR_CABECA` | persistencia (15 a 60 min) ou modelo (90 a 360 min) | 3.0, 4.0 e 5.0 |
 | `MODELO_ATUAL` | colunas do modelo: tags + calendario + estado da camera | 4.0 |
 | `ALGORITMO`, `FOLHA_MINIMA` | LightGBM com folhas de ~1 dia de dados | 5.0 |
-| `VARIAVEIS_CONTROLE` | tags que a recomendacao pode mudar | 2.0 e 6.0 |
+| `VARIAVEIS_CONTROLE`, `RECOMENDACAO_ATIVA` | tags que a recomendacao pode mudar, recomendacao ligada | 2.0 e 6.0 |
+| `BETA_LIMIAR` | criterio do limiar do alarme (1 = F1) | 7.0 |
 
-Com dados novos: coloque o Excel novo em `data/raw`, rode `pluma treinar`, e rode de novo os notebooks 3.0 a 6.0
-para conferir se as decisoes continuam valendo.
-
-Outra pasta de dados e modelos (pacote instalado fora do repositorio): `export PLUMA_PASTA=/caminho/da/pasta`
-(a pasta precisa ter `data/` e `models/`).
+Com dados novos: coloque o Excel novo em `data/raw` (ou use `treinar(ds)`), rode `pluma treinar` e rode de novo os
+notebooks 3.0 a 7.0 para conferir se as decisoes continuam valendo.
 
 ### Limite importante da recomendacao
 
-A previsao foi validada (notebooks 3.0 a 6.0). A recomendacao NAO: no notebook 6.0, os modelos de outro periodo nao
-veem o risco cair com as mudancas sugeridas, e a direcao das tags muda de um periodo para outro
-(`RECOMENDACAO_VALIDADA = False` no config). O modelo aprendeu associacoes, nao causa e efeito, e o sinal das tags
-e fraco perto do score da camera. Use a recomendacao so como hipotese para testar com a operacao.
+A previsao foi validada (notebooks 3.0 a 7.0). A recomendacao esta ligada (`RECOMENDACAO_ATIVA = True`), mas NAO foi
+validada: no notebook 6.0, os modelos de outro periodo nao veem o risco cair com as mudancas sugeridas, e a direcao das
+tags muda de um periodo para outro. O modelo aprendeu associacoes, nao causa e efeito. Por isso cada recomendacao sai
+com um aviso: use como hipotese para testar com a operacao (uma tag por vez), nao como ordem.
+
+### Notebooks
+
+| Notebook | O que faz |
+|---|---|
+| 0.0, 1.0 | ETL e exploracao |
+| 2.0 | existe sinal das tags no futuro? primeira recomendacao |
+| 3.0 | escolha das cabecas: modelo x persistencia |
+| 4.0 | escolha das features (fatorial, solar, clima, persistencia, cadeia) |
+| 5.0 | escolha do algoritmo (LightGBM, XGBoost, Gradient Boosting, Random Forest) |
+| 6.0 | pipeline final e validacao da recomendacao |
+| 7.0 | performance da versao final no teste (AP, precisao, recall, F1) e escolha do limiar |
 
 ## Project Organization
 

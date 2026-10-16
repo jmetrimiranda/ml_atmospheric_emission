@@ -81,6 +81,11 @@ predict:
 recommend:
 	$(PYTHON_INTERPRETER) ml_atmospheric_emission/modeling/recommend.py
 
+## Package to install anywhere (Databricks, another machine): dist/*.whl
+.PHONY: wheel
+wheel:
+	$(PYTHON_INTERPRETER) -m pip wheel . --no-deps -w dist
+
 ## Whole pipeline (1 to 5)
 .PHONY: pipeline
 pipeline: data features train predict recommend

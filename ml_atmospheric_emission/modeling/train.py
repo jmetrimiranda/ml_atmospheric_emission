@@ -1,16 +1,18 @@
+import json
+
 import joblib
 from lightgbm import LGBMClassifier
 import numpy as np
 from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
 from sklearn.impute import SimpleImputer
-from sklearn.metrics import average_precision_score, f1_score, mean_absolute_error, precision_score, recall_score
+from sklearn.metrics import average_precision_score, f1_score, mean_absolute_error, precision_recall_curve, precision_score, recall_score
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.pipeline import make_pipeline
 from xgboost import XGBClassifier, XGBRegressor
 
 import pandas as pd
 
-from ml_atmospheric_emission.config import ALGORITMO, FEATURES, FOLHA_MINIMA, MODELOS, PATH_MODELS, PREVISOR_POR_CABECA
+from ml_atmospheric_emission.config import ALGORITMO, BETA_LIMIAR, FEATURES, FOLHA_MINIMA, MODELOS, PATH_MODELS, PREVISOR_POR_CABECA
 from ml_atmospheric_emission.dataset import load_processed
 from ml_atmospheric_emission.features import head_features
 
@@ -347,6 +349,7 @@ def train_head_models(ds, previsores, modelos, algoritmo=ALGORITMO, limiar=0.5):
 def train_heads(ds, previsores, modelos, algoritmo=ALGORITMO, limiar=0.5):
     #Trains the models of the heads (train_head_models) and saves them in models/modelo_y_<minutos>.pkl
     modelos_cabeca = train_head_models(ds, previsores, modelos, algoritmo, limiar)
+    PATH_MODELS.mkdir(parents=True, exist_ok=True)
     for minutos in previsores:
         if minutos not in modelos_cabeca:
             print(minutos, 'min: persistencia, nada para treinar')
@@ -457,11 +460,63 @@ def train_heads_chain_cv(ds, features, cabecas, n_splits=5, limiar=0.5):
     return resultados
 
 
+def best_threshold(y_true, score, beta=BETA_LIMIAR, criterio='f_beta'):
+    #criterio='f_beta': threshold with the best F-beta = (1 + beta^2) * P * R / (beta^2 * P + R)
+    #   beta=1 (F1): precision and recall with the same weight | beta=2: the recall weighs more
+    #criterio='equilibrio': threshold with the best min(P, R) (the smaller of the two as high as possible)
+    precisao, recall, limiares = precision_recall_curve(y_true, score)
+    #The curve has one point more than the thresholds (the end, recall 0): it is not a threshold
+    precisao = precisao[:-1]
+    recall = recall[:-1]
+    f_beta = (1 + beta**2) * precisao * recall / (beta**2 * precisao + recall + 1e-12)
+    if criterio == 'equilibrio':
+        melhor = int(np.argmax(np.minimum(precisao, recall)))
+    else:
+        melhor = int(np.argmax(f_beta))
+    return {'limiar': float(limiares[melhor]), 'precisao': precisao[melhor], 'recall': recall[melhor], 'f_beta': f_beta[melhor]}
+
+
+def choose_thresholds(ds, previsores, modelos, beta=BETA_LIMIAR, criterio='f_beta', algoritmo=ALGORITMO, limiar=0.5):
+    #Threshold of each head, chosen WITHOUT looking at the rows used to train each model:
+    #model heads: out-of-fold predictions of the time series CV of ds (models that never saw those rows)
+    #persistence heads: the score now (no training, so all the rows of ds)
+    linhas = []
+    for minutos in previsores:
+        target = 'y_' + str(minutos)
+        if previsores[minutos] == 'persistencia':
+            dx = ds[ds[target].notna()]
+            y_true = (dx[target] >= limiar).astype(int).values
+            score = dx['y'].values
+        else:
+            tabelas, ap_treino = train_algorithms_cv(ds, modelos[previsores[minutos]], [minutos], [algoritmo], limiar=limiar)
+            y_true = tabelas[minutos]['y_true'].values
+            score = tabelas[minutos][algoritmo].values
+        resultado = best_threshold(y_true, score, beta, criterio)
+        resultado['minutos'] = minutos
+        resultado['previsor'] = previsores[minutos]
+        linhas.append(resultado)
+    tabela = pd.DataFrame(linhas)[['minutos', 'previsor', 'limiar', 'precisao', 'recall', 'f_beta']]
+    return tabela
+
+
+def save_thresholds(tabela, pasta=PATH_MODELS):
+    #models/limiares.json = {minutos: limiar}, read by predict.py
+    limiares = {}
+    for i in range(len(tabela)):
+        limiares[str(int(tabela['minutos'].iloc[i]))] = float(tabela['limiar'].iloc[i])
+    with open(pasta / 'limiares.json', 'w') as arquivo:
+        json.dump(limiares, arquivo, indent=1)
+    print('Limiares salvos em', pasta / 'limiares.json', ':', limiares)
+
+
 def main():
     #Step 3 of the pipeline: processed -> models/modelo_y_<minutos>.pkl of the heads that use a model
+    #and models/limiares.json (threshold of the alarm of each head)
     #Trained with ALL the data (train + hold out): the evaluation was already done in the notebooks
     ds = load_processed()
     train_heads(ds, PREVISOR_POR_CABECA, MODELOS)
+    tabela = choose_thresholds(ds, PREVISOR_POR_CABECA, MODELOS)
+    save_thresholds(tabela)
 
 
 if __name__ == "__main__":

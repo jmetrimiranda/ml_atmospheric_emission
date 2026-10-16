@@ -40,6 +40,8 @@ VARIAVEIS_CONTROLE = TAGS
 #risk going down, the opposite change helps the same, and the direction of the tags changes between the periods.
 #Use it only as a hypothesis to test in the plant. Change to True only after a validation that passes
 RECOMENDACAO_VALIDADA = False
+#The recommendation runs in 'pluma tudo' (with the warning while RECOMENDACAO_VALIDADA = False). False: it does not run
+RECOMENDACAO_ATIVA = True
 
 #Models compared in notebooks/3.0-jm-escolha-horizontes.ipynb (name: columns used)
 MODELOS = {
@@ -80,6 +82,12 @@ ALGORITMO = 'lightgbm'
 #Against overfitting: each leaf of the trees has at least ~1 day of data (288 rows of 5 min),
 #so a leaf can not memorize one plume episode (a few hours). With 100 rows the train AP was ~0.86 and the CV ~0.17
 FOLHA_MINIMA = 300
+
+#Threshold of each head: alarm of plume = probability (or score, in the persistence) >= threshold
+#Chosen in the training (models/limiares.json) with the best F-beta in the out-of-fold predictions of the CV
+#BETA_LIMIAR = 1: F1, precision and recall with the same weight (both high, the choice for this project)
+#BETA_LIMIAR = 2: more weight to the recall (misses less plumes, but gives more false alarms)
+BETA_LIMIAR = 1
 
 #Feature engineering tested in notebooks/4.0-jm-escolha-melhores-features.ipynb
 LAG_MINUTOS = [15, 30, 60]

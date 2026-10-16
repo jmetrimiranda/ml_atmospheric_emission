@@ -284,3 +284,42 @@ def plot_forecasts(ds, previsoes, previsores, cabecas, inicio, dias, caminho):
     fig.tight_layout()
     fig.savefig(caminho, dpi=150, bbox_inches='tight')
     plt.show()
+
+
+def plot_precision_recall(resultados, tabela, previsores, caminho):
+    #Precision x recall curve of each head in the TEST: blue = final system, gray dashed = persistence,
+    #dotted = prevalence (a random guess). The point = the threshold chosen in the train, applied to the test
+    from sklearn.metrics import precision_recall_curve
+    cabecas = list(resultados.keys())
+    colunas = 4
+    n_linhas = (len(cabecas) + colunas - 1) // colunas
+    fig, eixos = plt.subplots(n_linhas, colunas, figsize=(14, 3.6*n_linhas), squeeze=False)
+    cont = 0
+    for minutos in cabecas:
+        ax = eixos[cont // colunas, cont % colunas]
+        dx = resultados[minutos]
+        linha = tabela[tabela['minutos'] == minutos].iloc[0]
+        precisao, recall, limiares = precision_recall_curve(dx['y_true'], dx['sistema'])
+        ax.plot(recall, precisao, color='#2a78d6', linewidth=1.8, label='sistema final')
+        if previsores[minutos] != 'persistencia':
+            precisao, recall, limiares = precision_recall_curve(dx['y_true'], dx['persistencia'])
+            ax.plot(recall, precisao, color='#999999', linewidth=1.2, linestyle='--', label='persistencia')
+        ax.axhline(linha['prevalencia'], color='#555555', linewidth=0.8, linestyle=':')
+        ax.plot(linha['recall'], linha['precisao'], 'o', color='#eb6834', markersize=8, label='limiar escolhido')
+        ax.annotate(f"P={linha['precisao']:.2f} R={linha['recall']:.2f}", (linha['recall'], linha['precisao']),
+                    xytext=(6, 6), textcoords='offset points', fontsize=8, color='#333333')
+        ax.set_title(str(minutos) + ' min (' + previsores[minutos] + ') | AP ' + f"{linha['ap']:.2f}", fontsize=10)
+        ax.set_xlim(0, 1.02)
+        ax.set_ylim(0, 1.02)
+        ax.set_xlabel('Recall', fontsize=9)
+        ax.set_ylabel('Precisao', fontsize=9)
+        ax.grid(True, alpha=0.3)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        if cont == 0:
+            ax.legend(frameon=False, fontsize=8, loc='lower left')
+        cont = cont+1
+    fig.suptitle('Precisao x recall no conjunto de teste (hold out)', fontsize=12)
+    fig.tight_layout()
+    fig.savefig(caminho, dpi=150, bbox_inches='tight')
+    plt.show()

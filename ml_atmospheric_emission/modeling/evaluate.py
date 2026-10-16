@@ -683,3 +683,52 @@ def holdout_algorithms(ds_treino, ds_holdout, cabecas, features, algoritmos, lim
             linha['ap_teste_' + nome] = average_precision(y_teste.values, model.predict_proba(teste[colunas])[:, 1])
         linhas.append(linha)
     return pd.DataFrame(linhas)
+
+
+def threshold_metrics(y_true, score, limiar):
+    #Alarm = score >= limiar. Precision: of the alarms, how many were plume | Recall: of the plumes, how many had alarm
+    y_true = np.asarray(y_true)
+    alarme = (np.asarray(score) >= limiar).astype(int)
+    vp = int(np.sum((alarme == 1) & (y_true == 1)))
+    fp = int(np.sum((alarme == 1) & (y_true == 0)))
+    fn = int(np.sum((alarme == 0) & (y_true == 1)))
+    if vp + fp > 0:
+        precisao = vp / (vp + fp)
+    else:
+        precisao = 0.0
+    if vp + fn > 0:
+        recall = vp / (vp + fn)
+    else:
+        recall = 0.0
+    if precisao + recall > 0:
+        f1 = 2 * precisao * recall / (precisao + recall)
+    else:
+        f1 = 0.0
+    return {'precisao': precisao, 'recall': recall, 'f1': f1, 'vp': vp, 'fp': fp, 'fn': fn}
+
+
+def performance_table(resultados, limiares):
+    #Performance in the test of each head. resultados = {minutos: table with Data, y_true, sistema, persistencia}
+    #AP: without threshold | precision, recall, F1: with the threshold of the head (chosen in the train)
+    #Hours per day: each row is 5 minutes (alarm hours, plume hours and plume hours without alarm)
+    linhas = []
+    for minutos in resultados:
+        dx = resultados[minutos]
+        dias = dx['Data'].dt.normalize().nunique()
+        metricas = threshold_metrics(dx['y_true'].values, dx['sistema'].values, limiares[minutos])
+        persistencia = threshold_metrics(dx['y_true'].values, dx['persistencia'].values, 0.5)
+        linhas.append({
+            'minutos': minutos,
+            'prevalencia': dx['y_true'].mean(),
+            'ap': average_precision(dx['y_true'].values, dx['sistema'].values),
+            'limiar': limiares[minutos],
+            'precisao': metricas['precisao'],
+            'recall': metricas['recall'],
+            'f1': metricas['f1'],
+            'horas_alarme_dia': (metricas['vp'] + metricas['fp']) * 5 / 60 / dias,
+            'horas_pluma_dia': (metricas['vp'] + metricas['fn']) * 5 / 60 / dias,
+            'horas_pluma_sem_alarme_dia': metricas['fn'] * 5 / 60 / dias,
+            'ap_persistencia': average_precision(dx['y_true'].values, dx['persistencia'].values),
+            'f1_persistencia_05': persistencia['f1']
+        })
+    return pd.DataFrame(linhas)

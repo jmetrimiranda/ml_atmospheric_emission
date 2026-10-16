@@ -1,7 +1,7 @@
 import sys
 
 from ml_atmospheric_emission import dataset, features
-from ml_atmospheric_emission.config import MODELO_ATUAL, MODELOS, PREVISOR_POR_CABECA, VARIAVEIS_CONTROLE
+from ml_atmospheric_emission.config import MODELO_ATUAL, MODELOS, PATH_INTERIM, PREVISOR_POR_CABECA, RECOMENDACAO_ATIVA, VARIAVEIS_CONTROLE
 from ml_atmospheric_emission.dataset import load_interim, load_processed
 from ml_atmospheric_emission.features import create_model_features
 from ml_atmospheric_emission.modeling import predict, recommend, train
@@ -13,9 +13,15 @@ from ml_atmospheric_emission.modeling.recommend import recommend_now
 #of config.py (the same format of data/interim), with at least the last 30 minutes (score_max_30)
 
 
-def treinar():
+def treinar(ds=None):
     #Trains everything with the decisions of config.py: raw -> interim -> processed -> models/
-    dataset.main()
+    #ds=None: reads the Excel of data/raw | ds = table in the interim format (for example a table of Databricks)
+    if ds is None:
+        dataset.main()
+    else:
+        PATH_INTERIM.parent.mkdir(parents=True, exist_ok=True)
+        ds.to_csv(PATH_INTERIM, index=False)
+        print('Interim salvo em', PATH_INTERIM, '| linhas:', len(ds))
     features.main()
     train.main()
 
@@ -51,7 +57,7 @@ def main():
         treinar()
     if comando in ['prever', 'tudo']:
         predict.main()
-    if comando in ['recomendar', 'tudo']:
+    if comando == 'recomendar' or (comando == 'tudo' and RECOMENDACAO_ATIVA):
         recommend.main()
 
 
