@@ -35,11 +35,46 @@ def create_future_targets(ds,qtd_deslocamento):
     return ds
 
 
+def create_state_columns(ds):
+    ds = ds.copy()
+    #Current state of the camera (only the past and the present: available at prediction time)
+    ds = ds.sort_values('Data').reset_index(drop=True)
+    ds['score_atual'] = ds['y']
+    ds['score_max_30'] = ds.set_index('Data')['y'].rolling('30min').max().values
+    return ds
+
+
+### Feature Enginnering Techinques ###########################################################################
+
+### Feature Enginnering Techinques  1.0 : NaN Rows -----------------------------------------------------------
+def InputingNanRows(ds):
+    ds = ds.copy()
+    
+
+
+### Feature Enginnering Techinques  2.0 : Lags ---------------------------------------------------------------
+
+
+### Feature Enginnering Techinques  3.0 : Sin(x),Cos(x) ------------------------------------------------------
+
+
+### Feature Enginnering Techinques  4.0 : Derivates -----------------------------------------------------------
+
+### Feature Enginnering Techinques  5.0: Solar Coordinates ----------------------------------------------------
+
+### Feature Enginnering Techinques  6.0 : Climate Features ----------------------------------------------------
+
+
+### Feature Enginnering Techinques  7.0 : Derivates -----------------------------------------------------------
+
+
+### Feature Enginnering Techinques  8.0 : Models Features -----------------------------------------------------------
+
+
 def main():
     ds = load_interim()
     ds = create_datetime_columns(ds)
     ds = create_target(ds)
-    ds = create_future_targets(ds)
     ds.to_csv(PATH_PROCESSED, index=False)
 
 

@@ -1,6 +1,7 @@
 import pandas as pd
-import numpy as pd
+import numpy as np
 import matplotlib.pyplot as plt
+
 def convert_to_ordinal(row):
     if row['nn_score_smog'] >= 0.5:
         return 1

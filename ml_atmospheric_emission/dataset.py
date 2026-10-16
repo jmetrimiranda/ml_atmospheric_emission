@@ -44,6 +44,14 @@ def round_float_columns(ds):
     return ds
 
 
+def remove_days(ds, dias):
+    #Removes whole days (for example, days with suspicious data)
+    ds = ds.copy()
+    dia = ds['Data'].dt.date.astype(str)
+    ds = ds[~dia.isin(dias)].reset_index(drop=True)
+    return ds
+
+
 def main():
     ds = load_raw()
     ds = rename_columns(ds)
