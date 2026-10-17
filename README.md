@@ -67,8 +67,10 @@ Detalhes: `notebooks/7.0-jm-performance.ipynb`.
 
 ### 5. Databricks: previsao e recomendacao a cada 5 minutos (sem treinar)
 
-O notebook `databricks/pluma_job_5min.py` roda como Job a cada 5 minutos: le as linhas novas da tabela crua
-(as mesmas colunas de `data/raw`), usa os modelos ja treinados e grava duas tabelas Delta sem duplicar (MERGE):
+O notebook `databricks/pluma_job_5min.py` roda como Job a cada 5 minutos: le as linhas novas do PIMS
+(`bronze.sch_pims.tb_dados_pims_parquet`, formato longo: `Tag`, `DtHora`, `Valor`), faz a pivotagem das 6 tags do modelo
+e do `nn_score_smog` (uma coluna por tag, como no Excel), usa os modelos ja treinados e grava duas tabelas Delta sem
+duplicar (MERGE):
 
 | Tabela | Uma linha por | Colunas |
 |---|---|---|
@@ -88,14 +90,16 @@ O codigo, os `models/` e o `data/processed` ja estao no repositorio. No notebook
 ```
 
 Depois, nos dois jeitos:
-1. Abra `databricks/pluma_job_5min.py`, preencha os widgets (pasta, tabela crua, coluna de tempo, tabelas de saida) e rode uma vez.
+1. Abra `databricks/pluma_job_5min.py`, preencha os widgets (pasta, tabela do PIMS, tabelas de saida) e rode uma vez.
+   A primeira execucao preve os ultimos 7 dias (widget `dias_primeira_vez`); as seguintes, so os instantes novos.
 2. Se der erro ao carregar os `.pkl` (versoes diferentes de numpy, scikit-learn ou LightGBM no cluster), rode uma vez com
    `treinar = sim`: refaz os `.pkl` no proprio cluster em poucos segundos, a partir do `data/processed`.
 3. Workflows > Create job > tarefa Notebook com esse notebook > agendamento a cada 5 minutos
    (cron Quartz `0 0/5 * * * ?`). Use computacao serverless: um cluster classico demora minutos para ligar.
 
-A coluna de tempo da tabela crua deve estar no horario local da planta, como no Excel. A simulacao local do Job
-(sem Spark) esta no `notebooks/8.0-jm-simulacao-databricks.ipynb`.
+O `DtHora` do PIMS ja e o horario local da planta (o Databricks mostra `+00:00`, mas e o mesmo horario do Excel).
+Por isso o Job deixa a sessao em UTC e passa o horario como texto entre o Spark e o pandas: o horario nao muda.
+A simulacao local do Job (sem Spark) esta no `notebooks/8.0-jm-simulacao-databricks.ipynb`.
 
 ### Onde estao as decisoes
 
