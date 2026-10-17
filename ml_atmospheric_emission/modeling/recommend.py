@@ -227,6 +227,34 @@ def recommend_now(ds_historico, ds_agora, modelos_cabeca, features, variaveis_co
     return recomendacao
 
 
+def recommend_rows(ds_historico, ds_linhas, modelos_cabeca, features, variaveis_controle, passo_maximo=0.5):
+    #Recommendation for EACH row of ds_linhas (table made by features.create_model_features)
+    #Returns a long table: one row per tag to change (Data, risks, tag, current and recommended value, direction).
+    #An instant where no change lowers the risk has no row
+    limites = create_limits(ds_historico, variaveis_controle)
+    suporte = create_support(ds_historico, variaveis_controle)
+    lista_modelos = []
+    for minutos in modelos_cabeca:
+        lista_modelos.append(modelos_cabeca[minutos])
+    linhas = []
+    for i in range(len(ds_linhas)):
+        linha = ds_linhas.iloc[i]
+        recomendacao = recommend_actions(lista_modelos, linha, features, variaveis_controle, limites, suporte, passo_maximo)
+        for mudanca in recomendacao['mudancas']:
+            linhas.append({
+                'Data': linha['Data'],
+                'risco_atual': recomendacao['risco_atual'],
+                'risco_recomendado': recomendacao['risco_recomendado'],
+                'variavel': mudanca['variavel'],
+                'valor_atual': mudanca['valor_atual'],
+                'valor_recomendado': mudanca['valor_recomendado'],
+                'direcao': mudanca['direcao'],
+                'validada': RECOMENDACAO_VALIDADA
+            })
+    colunas = ['Data', 'risco_atual', 'risco_recomendado', 'variavel', 'valor_atual', 'valor_recomendado', 'direcao', 'validada']
+    return pd.DataFrame(linhas, columns=colunas)
+
+
 def main():
     #Step 5 of the pipeline: changes in the controllable tags that lower the risk of plume, for the
     #LAST instant of the interim. History (limits of operation) = processed table of the training

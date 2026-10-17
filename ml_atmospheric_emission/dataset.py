@@ -110,12 +110,27 @@ def load_climate(latitude, longitude, data_inicio, data_fim, variaveis):
     return ds
 
 
+def prepare_raw(ds):
+    #Raw table (the same columns of data/raw: the Excel or a table of Databricks) -> interim format
+    #The same steps of the training, so the inference sees the data in the same way. A table already in the
+    #interim format passes without change (it already has Data and no nn_ok_smog)
+    ds = ds.copy()
+    if 'Data' not in ds.columns:
+        #In the Excel the column of the time has no name (the first column): it becomes Data
+        ds = ds.rename(columns={ds.columns[0]: 'Data'})
+    ds['Data'] = pd.to_datetime(ds['Data'])
+    ds = round_float_columns(ds)
+    #Only rows with the camera score (it is the target and the persistence)
+    ds = ds[ds['nn_score_smog'].notna()]
+    if 'nn_ok_smog' in ds.columns:
+        ds = ds.drop(columns=['nn_ok_smog'])
+    return ds.reset_index(drop=True)
+
+
 def main():
     #Step 1 of the pipeline: raw (excel) -> interim (csv). Next: features.py, train.py, predict.py
     ds = load_raw()
-    ds = rename_columns(ds)
-    ds  = round_float_columns(ds)
-    ds = filter_rows(ds)
+    ds = prepare_raw(ds)
     PATH_INTERIM.parent.mkdir(parents=True, exist_ok=True)
     ds.to_csv(PATH_INTERIM, index=False)
     print('Interim salvo em', PATH_INTERIM, '| linhas:', len(ds))
